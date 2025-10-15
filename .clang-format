@@ -1,0 +1,9 @@
+BasedOnStyle: WebKit
+
+IndentWidth: 4
+ColumnLimit: 120
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+BreakBeforeBraces: Custom
+BraceWrapping:
+    AfterFunction: false
+PackConstructorInitializers: CurrentLine
