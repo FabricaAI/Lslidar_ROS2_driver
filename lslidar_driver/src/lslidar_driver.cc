@@ -67,7 +67,7 @@ bool LslidarDriver::loadParameters() {
     angle_disable_max = 0.0;
 
     this->declare_parameter<std::string>("lidar_name", "M10_P");
-    this->declare_parameter<std::string>("frame_id", "laser_link");
+    this->declare_parameter<std::string>("frame_id", "lidar_link");
     this->declare_parameter<std::string>("scan_topic", "/scan_raw");
     this->declare_parameter<std::string>("pointcloud_topic", "/lslidar_point_cloud");
     this->declare_parameter<double>("min_range", 0.3);
@@ -469,6 +469,7 @@ int LslidarDriver::receive_data(unsigned char* packet_bytes) {
         || lidar_name == "M10_PLUS") {
         if (packet_bytes[2] == 0x55 && packet_bytes[3] == 0x00) len = 188;
     }
+    // RCLCPP_INFO(this->get_logger(), "len = %d", len);
     while (count < len) {
         count_2 = serial_->read(packet_bytes + count, len - count);
         if (count_2 >= 0) count += count_2;
@@ -569,7 +570,8 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes,
     invalidValue = package_points - invalidValue;
     if (lidar_name == "N10" || lidar_name == "L10") invalidValue--;
     if (invalidValue <= 1) {
-        delete packet_bytes;
+        // double free
+        // delete packet_bytes;
         return;
     }
 
@@ -624,10 +626,11 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes,
         }
     }
     packet_bytes = { 0x00 };
-    if (packet_bytes) {
-        packet_bytes = NULL;
-        delete packet_bytes;
-    }
+    // potential double free
+    // if (packet_bytes) {
+    //     packet_bytes = NULL;
+    //     delete packet_bytes;
+    // }
 }
 
 void LslidarDriver::data_processing_2(unsigned char* packet_bytes,
@@ -1098,7 +1101,7 @@ bool LslidarDriver::polling() {
         if (lidar_name == "N10_P" || lidar_name == "M10_DOUBLE") LslidarDriver::data_processing_2(packet_bytes, len);
         else LslidarDriver::data_processing(packet_bytes, len);
     }
-    delete packet_bytes;
+    delete[] packet_bytes;
     return true;
 }
 
