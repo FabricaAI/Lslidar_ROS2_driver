@@ -91,16 +91,16 @@ private:
     boost::condition_variable pubscan_cond_;
 
     int UDP_PORT_NUMBER;
-    int count_num;
-    int package_points;
-    int data_bits_start;
-    int degree_bits_start;
-    int end_degree_bits_start;
-    int rpm_bits_start;
+    int count_num_;
+    int package_points_;
+    int data_bits_start_;
+    int degree_bits_start_;
+    int end_degree_bits_start_;
+    int rpm_bits_start_;
     int baud_rate_;
     int points_size_;
-    int idx = 0;
-    int link_time = 0;
+    int idx_ = 0;
+    int link_time_ = 0;
 
     bool use_gps_ts;
     bool is_start;
