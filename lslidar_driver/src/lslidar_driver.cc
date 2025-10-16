@@ -946,12 +946,12 @@ void LslidarDriver::pubScanThread() {
                 pcl::toROSMsg(*point_cloud, pc_msg);
                 point_cloud_pub->publish(pc_msg);
             }
-        } else {
-            */
+    }
+    */
+
         if (pubScan) {
             auto scan = sensor_msgs::msg::LaserScan::UniquePtr(new sensor_msgs::msg::LaserScan());
-            int scan_num = ceil((angle_able_max - angle_able_min) / 360 * count_num) + 1;
-
+            int scan_num = ceil((angle_able_max - angle_able_min) / 360 * count_num_) + 1;
             std::vector<ScanPoint> points;
             rclcpp::Time start_time;
             float scan_time;
@@ -970,7 +970,7 @@ void LslidarDriver::pubScanThread() {
                 scan->angle_min = 2 * M_PI * angle_able_min / 360;
                 scan->angle_max = 2 * M_PI * angle_able_max / 360;
             }
-            scan->angle_increment = 2 * M_PI / (double)(count_num - 1);
+            scan->angle_increment = 2 * M_PI / (double)(count_num_ - 1);
 
             scan->range_min = min_range;
             scan->range_max = max_range;
@@ -979,14 +979,14 @@ void LslidarDriver::pubScanThread() {
             scan->intensities.reserve(scan_num);
             scan->intensities.assign(scan_num, std::numeric_limits<float>::infinity());
             scan->scan_time = scan_time;
-            scan->time_increment = scan_time / (double)(count_num - 1);
+            scan->time_increment = scan_time / (double)(count_num_ - 1);
 
-            int start_num = floor(angle_able_min * count_num / 360);
-            int end_num = floor(angle_able_max * count_num / 360);
+            int start_num = floor(angle_able_min * count_num_ / 360);
+            int end_num = floor(angle_able_max * count_num_ / 360);
 
-            for (int i = 0; i < count_num; i++) {
-                int point_idx = round((360 - points[i].degree) * count_num / 360);
-                if (point_idx < (end_num - count_num)) point_idx += count_num;
+            for (int i = 0; i < count_num_; i++) {
+                int point_idx = round((360 - points[i].degree) * count_num_ / 360);
+                if (point_idx < (end_num - count_num_)) point_idx += count_num_;
                 point_idx = point_idx - start_num;
                 if (point_idx < 0 || point_idx >= scan_num) continue;
                 if (points[i].range == 0.0) {
@@ -996,19 +996,7 @@ void LslidarDriver::pubScanThread() {
                     scan->ranges[point_idx] = (float)dist;
                 }
                 scan->intensities[point_idx] = points[i].intensity;
-
-                if (truncated_mode_) {
-                    int len = sizeof(scan_crop_max) / sizeof(scan_crop_max[0]);
-                    for (int j = 0; j < len; ++j) {
-                        if ((point_idx >= (scan_crop_min[j] * count_num / 360))
-                            && (point_idx <= (scan_crop_max[j] * count_num / 360))) {
-                            scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
-                            scan->intensities[point_idx] = 0;
-                        }
-                    }
-                }
             }
-
             scan_pub->publish(std::move(scan));
         }
         if (pubPointCloud2) {
@@ -1024,7 +1012,7 @@ void LslidarDriver::pubScanThread() {
             point_cloud->header.stamp = static_cast<uint64_t>(timestamp * 1e6);
             point_cloud->header.frame_id = frame_id;
             point_cloud->height = 1;
-            for (uint16_t i = 0; i < count_num; i++) {
+            for (uint16_t i = 0; i < count_num_; i++) {
                 double degree = 360.0 - points[i].degree;
                 bool pass_point = false;
                 if (angle_able_max < 360) {
@@ -1035,10 +1023,11 @@ void LslidarDriver::pubScanThread() {
                 if (points[i].range < 0.001) pass_point = true;
                 if (!pass_point) {
                     // printf("degree = %f\n",degree);
-                    // printf("angle_able_min = %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
+                    // printf("angle_able_min =
+                    // %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
                     VPoint point;
-                    int point_idx = round(degree * count_num / 360);
-                    point.timestamp = timestamp - point_idx * (scan_time / count_num);
+                    int point_idx = round(degree * count_num_ / 360);
+                    point.timestamp = timestamp - point_idx * (scan_time / count_num_);
                     // printf("timestamp = %f\n",point.timestamp);
                     point.x = points[i].range * cos(M_PI / 180 * points[i].degree);
                     point.y = -points[i].range * sin(M_PI / 180 * points[i].degree);
