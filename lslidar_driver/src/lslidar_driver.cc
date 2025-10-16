@@ -127,77 +127,77 @@ bool LslidarDriver::loadParameters() {
             angle_able_max = angle_disable_min;
         }
     }
-    count_num = 0;
+    count_num_ = 0;
 
     scan_points_.resize(6000);
 
     if (lidar_name == "M10") {
         use_gps_ts = false;
         PACKET_SIZE = 92;
-        package_points = 42;
-        data_bits_start = 6;
-        degree_bits_start = 2;
-        rpm_bits_start = 4;
+        package_points_ = 42;
+        data_bits_start_ = 6;
+        degree_bits_start_ = 2;
+        rpm_bits_start_ = 4;
         baud_rate_ = 460800;
         points_size_ = 1008;
     } else if (lidar_name == "M10_P") {
         PACKET_SIZE = 160;
-        package_points = 70;
-        data_bits_start = 8;
-        degree_bits_start = 4;
-        rpm_bits_start = 6;
+        package_points_ = 70;
+        data_bits_start_ = 8;
+        degree_bits_start_ = 4;
+        rpm_bits_start_ = 6;
         baud_rate_ = 500000;
         points_size_ = 2000;
     } else if (lidar_name == "M10_PLUS") {
         PACKET_SIZE = 104;
-        package_points = 41;
-        data_bits_start = 8;
-        degree_bits_start = 4;
-        rpm_bits_start = 6;
+        package_points_ = 41;
+        data_bits_start_ = 8;
+        degree_bits_start_ = 4;
+        rpm_bits_start_ = 6;
         points_size_ = 5000;
         baud_rate_ = 921600;
     } else if (lidar_name == "M10_GPS") {
         PACKET_SIZE = 102;
-        package_points = 42;
-        data_bits_start = 6;
-        degree_bits_start = 2;
-        rpm_bits_start = 4;
+        package_points_ = 42;
+        data_bits_start_ = 6;
+        degree_bits_start_ = 2;
+        rpm_bits_start_ = 4;
         baud_rate_ = 460800;
         points_size_ = 1008;
     } else if (lidar_name == "N10") {
         PACKET_SIZE = 58;
-        package_points = 16;
-        data_bits_start = 7;
-        degree_bits_start = 5;
-        end_degree_bits_start = 55;
+        package_points_ = 16;
+        data_bits_start_ = 7;
+        degree_bits_start_ = 5;
+        end_degree_bits_start_ = 55;
         baud_rate_ = 230400;
         points_size_ = 2000;
         use_gps_ts = false;
         compensation = false;
     } else if (lidar_name == "M10_DOUBLE") {
         PACKET_SIZE = 300;
-        package_points = 70;
-        data_bits_start = 8;
-        degree_bits_start = 4;
-        rpm_bits_start = 6;
+        package_points_ = 70;
+        data_bits_start_ = 8;
+        degree_bits_start_ = 4;
+        rpm_bits_start_ = 6;
         points_size_ = 3000;
         baud_rate_ = 921600;
     } else if (lidar_name == "N10_P") {
         PACKET_SIZE = 108;
-        package_points = 16;
-        data_bits_start = 7;
-        degree_bits_start = 5;
-        end_degree_bits_start = 105;
+        package_points_ = 16;
+        data_bits_start_ = 7;
+        degree_bits_start_ = 5;
+        end_degree_bits_start_ = 105;
         baud_rate_ = 460800;
         points_size_ = 2000;
         use_gps_ts = false;
         compensation = false;
     } else if (lidar_name == "L10") {
         PACKET_SIZE = 58;
-        package_points = 16;
-        data_bits_start = 7;
-        degree_bits_start = 5;
-        end_degree_bits_start = 55;
+        package_points_ = 16;
+        data_bits_start_ = 7;
+        degree_bits_start_ = 5;
+        end_degree_bits_start_ = 55;
         baud_rate_ = 230400;
         points_size_ = 2000;
         use_gps_ts = false;
@@ -440,6 +440,8 @@ int LslidarDriver::receive_data(unsigned char* packet_bytes) {
     int len = 0;
     int count_2 = 0;
     int count = 0;
+
+    // read the first two start of frame bytes
     while (count <= 0) {
         count = serial_->read(packet_bytes, 1);
         LslidarDriver::recvThread_crc(count, link_time);
@@ -448,41 +450,51 @@ int LslidarDriver::receive_data(unsigned char* packet_bytes) {
 
     while (count_2 <= 0) {
         count_2 = serial_->read(packet_bytes + count, 1);
-        if (count_2 >= 0) count += count_2;
+        if (count_2 > 0) count += count_2;
         LslidarDriver::recvThread_crc(count_2, link_time);
     }
 
     count_2 = 0;
     if (packet_bytes[1] != 0x5A) return 0;
-    while (count_2 <= 0) {
-        count_2 = serial_->read(packet_bytes + count, 2);
-        if (count_2 >= 0) count += count_2;
-        LslidarDriver::recvThread_crc(count_2, link_time);
+
+    // next two bytes determine size of frame
+    int bytes_to_read = 2;
+    while (count_2 < bytes_to_read) {
+        int result = serial_->read(packet_bytes + count, bytes_to_read - count_2);
+        if (result < 2) {
+            RCLCPP_WARN(this->get_logger(), "size read result < 2: %d", result);
+        }
+        LslidarDriver::recvThread_crc(result, link_time);
+        if (result > 0) {
+            count_2 += result;
+        }
     }
 
     count_2 = 0;
 
-    if (lidar_name == "M10") len = 92;
-    else if (lidar_name == "M10_GPS") len = 102;
-    else if (lidar_name == "N10_P") len = 108;
-    else if (lidar_name == "N10" || lidar_name == "L10") len = packet_bytes[2];
-    else {
-        len_H = packet_bytes[2];
-        len_L = packet_bytes[3];
-        len = len_H * 256 + len_L;
-    }
+    // if (lidar_name == "M10") len = 92;
+    // else if (lidar_name == "M10_GPS") len = 102;
+    // else if (lidar_name == "N10_P") len = 108;
+    // else if (lidar_name == "N10" || lidar_name == "L10") len = packet_bytes[2];
+    // else {
+    // TODO: sanity check this length value please
+    len_H = packet_bytes[2];
+    len_L = packet_bytes[3];
+    len = len_H * 256 + len_L;
+    // }
     if (lidar_name == "M10" || lidar_name == "M10_DOUBLE" || lidar_name == "M10_GPS" || lidar_name == "M10_P"
         || lidar_name == "M10_PLUS") {
         if (packet_bytes[2] == 0x55 && packet_bytes[3] == 0x00) len = 188;
     }
+    RCLCPP_DEBUG(this->get_logger(), "len = %d", len);
     while (count < len) {
         count_2 = serial_->read(packet_bytes + count, len - count);
         if (count_2 >= 0) count += count_2;
         LslidarDriver::recvThread_crc(count_2, link_time);
     }
-    if (lidar_name == "N10" || lidar_name == "L10" || lidar_name == "N10_P") {
-        if (packet_bytes[PACKET_SIZE - 1] != N10_CalCRC8(packet_bytes, PACKET_SIZE - 1)) return 0;
-    }
+    // if (lidar_name == "N10" || lidar_name == "L10" || lidar_name == "N10_P") {
+    //     if (packet_bytes[PACKET_SIZE - 1] != N10_CalCRC8(packet_bytes, PACKET_SIZE - 1)) return 0;
+    // }
     return len;
 }
 
@@ -518,12 +530,15 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
     boost::posix_time::ptime t1, t2;
     t1 = boost::posix_time::microsec_clock::universal_time();
 
-    int s = packet_bytes[degree_bits_start];
-    int z = packet_bytes[degree_bits_start + 1];
+    int s = packet_bytes[degree_bits_start_];
+    int z = packet_bytes[degree_bits_start_ + 1];
 
     degree = (s * 256 + z) / 100.f + degree_compensation;
     degree = (degree < 0) ? degree + 360 : degree;
     degree = (degree > 360) ? degree - 360 : degree;
+
+    // not relevant
+    /*
     if (lidar_name == "N10" || lidar_name == "L10") {
         int s_e = packet_bytes[end_degree_bits_start];
         int z_e = packet_bytes[end_degree_bits_start + 1];
@@ -534,16 +549,18 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
         if (degree > end_degree) degree_interval = end_degree + 360 - degree;
         else degree_interval = end_degree - degree;
     }
+    */
 
     // boost::unique_lock<boost::mutex> lock(mutex_);
     if (lidar_name == "M10_PLUS" || lidar_name == "M10_P") {
         PACKET_SIZE = len;
-        package_points = (PACKET_SIZE - 20) / 2;
+        package_points_ = (PACKET_SIZE - 20) / 2;
     }
     int invalidValue = 0;
     int point_len = 2;
-    if (lidar_name == "N10" || lidar_name == "L10") point_len = 3;
+    // if (lidar_name == "N10" || lidar_name == "L10") point_len = 3;
 
+    /*
     if (lidar_name == "M10_GPS" || lidar_name == "M10") {
         int err_data_84 = packet_bytes[84];
         int err_data_85 = packet_bytes[85];
@@ -552,10 +569,11 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
             packet_bytes[87] = 0xFF;
         }
     }
+    */
 
-    for (int num = 0; num < point_len * package_points; num += point_len) {
-        int s = packet_bytes[num + data_bits_start];
-        int z = packet_bytes[num + data_bits_start + 1];
+    for (int num = 0; num < point_len * package_points_; num += point_len) {
+        int s = packet_bytes[num + data_bits_start_];
+        int z = packet_bytes[num + data_bits_start_ + 1];
         if ((s * 256 + z) == 0xFFFF) invalidValue++;
     }
 
@@ -571,44 +589,49 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
         sweep_end_time_gps = get_gps_stamp(pTime);
         sweep_end_time_hardware = sub_second % 1000000000;
     }
-    invalidValue = package_points - invalidValue;
-    if (lidar_name == "N10" || lidar_name == "L10") invalidValue--;
-    if (invalidValue <= 1) {
-        // double free
-        // delete packet_bytes;
+
+    // this becomes the number of valid points
+    int valid_points_count = package_points_ - invalidValue;
+    // if (lidar_name == "N10" || lidar_name == "L10") invalidValue--;
+    if (valid_points_count <= 1) {
+        RCLCPP_WARN(this->get_logger(), "Number of valid samples <= 1");
         return;
     }
 
-    for (int num = 0; num < package_points; num++) {
-        int s = packet_bytes[num * point_len + data_bits_start];
-        int z = packet_bytes[num * point_len + data_bits_start + 1];
+    for (int num = 0; num < package_points_; num++) {
+        int s = packet_bytes[num * point_len + data_bits_start_];
+        int z = packet_bytes[num * point_len + data_bits_start_ + 1];
         int y = 0;
-        if (lidar_name == "N10" || lidar_name == "L10") y = packet_bytes[num * point_len + data_bits_start + 2];
+        // if (lidar_name == "N10" || lidar_name == "L10") y = packet_bytes[num * point_len + data_bits_start + 2];
         int dist_temp = s & 0x7F;
         int inten_temp = s & 0x80;
 
         if ((s * 256 + z) != 0xFFFF) {
+            /*
             if (lidar_name == "N10" || lidar_name == "L10") {
                 scan_points_[idx].range = double(s * 256 + (z)) / 1000.f;
                 scan_points_[idx].intensity = int(y);
-            } else if ((lidar_name == "M10_P" || lidar_name == "M10_PLUS") && !high_reflection) {
-                scan_points_[idx].range = double(s * 256 + (z)) / 1000.f;
-                scan_points_[idx].intensity = 0;
+            } else
+            */
+
+            if ((lidar_name == "M10_P" || lidar_name == "M10_PLUS") && !high_reflection) {
+                scan_points_[idx_].range = double(s * 256 + (z)) / 1000.f;
+                scan_points_[idx_].intensity = 0;
             } else {
-                scan_points_[idx].range = double(dist_temp * 256 + (z)) / 1000.f;
-                if (inten_temp) scan_points_[idx].intensity = 255;
-                else scan_points_[idx].intensity = 0;
+                scan_points_[idx_].range = double(dist_temp * 256 + (z)) / 1000.f;
+                if (inten_temp) scan_points_[idx_].intensity = 255;
+                else scan_points_[idx_].intensity = 0;
             }
-            if ((degree + (degree_interval / invalidValue * num)) > 360)
-                scan_points_[idx].degree = degree + (degree_interval / invalidValue * num) - 360;
-            else scan_points_[idx].degree = degree + (degree_interval / invalidValue * num);
+            if ((degree + (degree_interval / valid_points * num)) > 360)
+                scan_points_[idx_].degree = degree + (degree_interval / valid_points_count * num) - 360;
+            else scan_points_[idx_].degree = degree + (degree_interval / valid_points_count * num);
         } else continue;
 
-        if ((scan_points_[idx].degree < last_degree && scan_points_[idx].degree < 5 && last_degree > 355)
-            || idx >= points_size_) {
-            last_degree = scan_points_[idx].degree;
-            count_num = idx;
-            idx = 0;
+        if ((scan_points_[idx_].degree < last_degree && scan_points_[idx_].degree < 5 && last_degree > 355)
+            || idx_ >= points_size_) {
+            last_degree = scan_points_[idx_].degree;
+            count_num_ = idx_;
+            idx_ = 0;
             for (long unsigned int k = 0; k < scan_points_.size(); k++) {
                 if (scan_points_[k].range < min_range || scan_points_[k].range > max_range) scan_points_[k].range = 0;
             }
@@ -625,11 +648,11 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
             pubscan_cond_.notify_one();
             time_ = get_clock()->now();
         } else {
-            last_degree = scan_points_[idx].degree;
-            idx++;
+            last_degree = scan_points_[idx_].degree;
+            idx_++;
         }
     }
-    // potential double free
+    // this makes absolutely 0 sense whatsoever
     // packet_bytes = { 0x00 };
     // if (packet_bytes) {
     //     packet_bytes = NULL;
@@ -637,7 +660,10 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
     // }
 }
 
-void LslidarDriver::data_processing_2(unsigned char* packet_bytes, int len) // 处理每一包的数据
+/*
+void LslidarDriver::data_processing_2(unsigned char* packet_bytes,
+    int len) // 处理每一包的数据
+>>>>>>> bd14958 (fix(lidar) commented out irrelevant code to us, cleaned up stuff)
 {
     double degree;
     double end_degree;
@@ -651,6 +677,7 @@ void LslidarDriver::data_processing_2(unsigned char* packet_bytes, int len) // �
     degree = (s * 256 + z) / 100.f + degree_compensation;
     degree = (degree < 0) ? degree + 360 : degree;
     degree = (degree > 360) ? degree - 360 : degree;
+    // not relevant
     if (lidar_name == "N10_P") {
         int s_e = packet_bytes[end_degree_bits_start];
         int z_e = packet_bytes[end_degree_bits_start + 1];
@@ -669,7 +696,7 @@ void LslidarDriver::data_processing_2(unsigned char* packet_bytes, int len) // �
     }
     int invalidValue = 0;
     int point_len = 4;
-    if (lidar_name == "N10_P") point_len = 6;
+    // if (lidar_name == "N10_P") point_len = 6;
 
     for (int num = 0; num < point_len * package_points; num += point_len) {
         int s = packet_bytes[num + data_bits_start];
@@ -765,6 +792,7 @@ void LslidarDriver::data_processing_2(unsigned char* packet_bytes, int len) // �
         delete packet_bytes;
     }
 }
+*/
 
 void LslidarDriver::pubScanThread() {
     bool wait_for_wake = true;
@@ -776,6 +804,8 @@ void LslidarDriver::pubScanThread() {
             pubscan_cond_.wait(lock);
             wait_for_wake = false;
         }
+        // these are not our models
+        /*
         if (lidar_name == "N10_P" || lidar_name == "M10_DOUBLE") {
             if (pubScan) {
                 auto scan = sensor_msgs::msg::LaserScan::UniquePtr(new sensor_msgs::msg::LaserScan());
@@ -831,18 +861,18 @@ void LslidarDriver::pubScanThread() {
                             }
                         }
                     }
-                    /*
-                    if (points[i + 3000].range == 0.0)
-                    {
-                            scan->ranges[point_idx + count_num] = std::numeric_limits<float>::infinity();
-                            scan->intensities[point_idx + count_num] = 0;
-                    }
-                    else
-                    {
-                            double dist = points[i+3000].range;
-                            scan->ranges[point_idx + count_num] = (float)dist;
-                            scan->intensities[point_idx + count_num] = points[i + 3000].intensity;
-                    }*/
+                    //
+                    // if (points[i + 3000].range == 0.0)
+                    // {
+                    //         scan->ranges[point_idx + count_num] = std::numeric_limits<float>::infinity();
+                    //         scan->intensities[point_idx + count_num] = 0;
+                    // }
+                    // else
+                    // {
+                    //         double dist = points[i+3000].range;
+                    //         scan->ranges[point_idx + count_num] = (float)dist;
+                    //         scan->intensities[point_idx + count_num] = points[i + 3000].intensity;
+                    // }
                 }
                 scan_pub->publish(std::move(scan));
             }
@@ -905,112 +935,112 @@ void LslidarDriver::pubScanThread() {
                 point_cloud_pub->publish(pc_msg);
             }
         } else {
-            if (pubScan) {
-                auto scan = sensor_msgs::msg::LaserScan::UniquePtr(new sensor_msgs::msg::LaserScan());
-                int scan_num = ceil((angle_able_max - angle_able_min) / 360 * count_num) + 1;
+            */
+        if (pubScan) {
+            auto scan = sensor_msgs::msg::LaserScan::UniquePtr(new sensor_msgs::msg::LaserScan());
+            int scan_num = ceil((angle_able_max - angle_able_min) / 360 * count_num) + 1;
 
-                std::vector<ScanPoint> points;
-                rclcpp::Time start_time;
-                float scan_time;
-                this->getScan(points, start_time, scan_time);
-                scan->header.frame_id = frame_id;
-                if (use_gps_ts) {
-                    scan->header.stamp = rclcpp::Time(sweep_end_time_gps, sweep_end_time_hardware);
+            std::vector<ScanPoint> points;
+            rclcpp::Time start_time;
+            float scan_time;
+            this->getScan(points, start_time, scan_time);
+            scan->header.frame_id = frame_id;
+            if (use_gps_ts) {
+                scan->header.stamp = rclcpp::Time(sweep_end_time_gps, sweep_end_time_hardware);
+            } else {
+                scan->header.stamp = this->now(); // timestamp will obtained from sweep data stamp
+            }
+
+            if (angle_able_max > 360) {
+                scan->angle_min = 2 * M_PI * (angle_able_min - 360) / 360;
+                scan->angle_max = 2 * M_PI * (angle_able_max - 360) / 360;
+            } else {
+                scan->angle_min = 2 * M_PI * angle_able_min / 360;
+                scan->angle_max = 2 * M_PI * angle_able_max / 360;
+            }
+            scan->angle_increment = 2 * M_PI / (double)(count_num - 1);
+
+            scan->range_min = min_range;
+            scan->range_max = max_range;
+            scan->ranges.reserve(scan_num);
+            scan->ranges.assign(scan_num, std::numeric_limits<float>::infinity());
+            scan->intensities.reserve(scan_num);
+            scan->intensities.assign(scan_num, std::numeric_limits<float>::infinity());
+            scan->scan_time = scan_time;
+            scan->time_increment = scan_time / (double)(count_num - 1);
+
+            int start_num = floor(angle_able_min * count_num / 360);
+            int end_num = floor(angle_able_max * count_num / 360);
+
+            for (int i = 0; i < count_num; i++) {
+                int point_idx = round((360 - points[i].degree) * count_num / 360);
+                if (point_idx < (end_num - count_num)) point_idx += count_num;
+                point_idx = point_idx - start_num;
+                if (point_idx < 0 || point_idx >= scan_num) continue;
+                if (points[i].range == 0.0) {
+                    scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
                 } else {
-                    scan->header.stamp = this->now(); // timestamp will obtained from sweep data stamp
+                    double dist = points[i].range;
+                    scan->ranges[point_idx] = (float)dist;
                 }
+                scan->intensities[point_idx] = points[i].intensity;
 
-                if (angle_able_max > 360) {
-                    scan->angle_min = 2 * M_PI * (angle_able_min - 360) / 360;
-                    scan->angle_max = 2 * M_PI * (angle_able_max - 360) / 360;
-                } else {
-                    scan->angle_min = 2 * M_PI * angle_able_min / 360;
-                    scan->angle_max = 2 * M_PI * angle_able_max / 360;
-                }
-                scan->angle_increment = 2 * M_PI / (double)(count_num - 1);
-
-                scan->range_min = min_range;
-                scan->range_max = max_range;
-                scan->ranges.reserve(scan_num);
-                scan->ranges.assign(scan_num, std::numeric_limits<float>::infinity());
-                scan->intensities.reserve(scan_num);
-                scan->intensities.assign(scan_num, std::numeric_limits<float>::infinity());
-                scan->scan_time = scan_time;
-                scan->time_increment = scan_time / (double)(count_num - 1);
-
-                int start_num = floor(angle_able_min * count_num / 360);
-                int end_num = floor(angle_able_max * count_num / 360);
-
-                for (int i = 0; i < count_num; i++) {
-                    int point_idx = round((360 - points[i].degree) * count_num / 360);
-                    if (point_idx < (end_num - count_num)) point_idx += count_num;
-                    point_idx = point_idx - start_num;
-                    if (point_idx < 0 || point_idx >= scan_num) continue;
-                    if (points[i].range == 0.0) {
-                        scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
-                    } else {
-                        double dist = points[i].range;
-                        scan->ranges[point_idx] = (float)dist;
-                    }
-                    scan->intensities[point_idx] = points[i].intensity;
-
-                    if (truncated_mode_) {
-                        int len = sizeof(scan_crop_max) / sizeof(scan_crop_max[0]);
-                        for (int j = 0; j < len; ++j) {
-                            if ((point_idx >= (scan_crop_min[j] * count_num / 360))
-                                && (point_idx <= (scan_crop_max[j] * count_num / 360))) {
-                                scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
-                                scan->intensities[point_idx] = 0;
-                            }
+                if (truncated_mode_) {
+                    int len = sizeof(scan_crop_max) / sizeof(scan_crop_max[0]);
+                    for (int j = 0; j < len; ++j) {
+                        if ((point_idx >= (scan_crop_min[j] * count_num / 360))
+                            && (point_idx <= (scan_crop_max[j] * count_num / 360))) {
+                            scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
+                            scan->intensities[point_idx] = 0;
                         }
                     }
                 }
+            }
 
-                scan_pub->publish(std::move(scan));
-            }
-            if (pubPointCloud2) {
-                std::vector<ScanPoint> points;
-                rclcpp::Time start_time;
-                float scan_time;
-                this->getScan(points, start_time, scan_time);
-                VPointCloud::Ptr point_cloud(new VPointCloud());
-                if (use_gps_ts) {
-                    start_time = rclcpp::Time(sweep_end_time_gps, sweep_end_time_hardware);
-                }
-                double timestamp = start_time.seconds();
-                point_cloud->header.stamp = static_cast<uint64_t>(timestamp * 1e6);
-                point_cloud->header.frame_id = frame_id;
-                point_cloud->height = 1;
-                for (uint16_t i = 0; i < count_num; i++) {
-                    double degree = 360.0 - points[i].degree;
-                    bool pass_point = false;
-                    if (angle_able_max < 360) {
-                        if (degree < angle_able_min || degree > angle_able_max) pass_point = true;
-                    } else {
-                        if (degree < angle_able_min && degree > (angle_able_max - 360)) pass_point = true;
-                    }
-                    if (points[i].range < 0.001) pass_point = true;
-                    if (!pass_point) {
-                        // printf("degree = %f\n",degree);
-                        // printf("angle_able_min = %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
-                        VPoint point;
-                        int point_idx = round(degree * count_num / 360);
-                        point.timestamp = timestamp - point_idx * (scan_time / count_num);
-                        // printf("timestamp = %f\n",point.timestamp);
-                        point.x = points[i].range * cos(M_PI / 180 * points[i].degree);
-                        point.y = -points[i].range * sin(M_PI / 180 * points[i].degree);
-                        point.z = 0;
-                        point.intensity = points[i].intensity;
-                        point_cloud->points.push_back(point);
-                        ++point_cloud->width;
-                    }
-                }
-                sensor_msgs::msg::PointCloud2 pc_msg;
-                pcl::toROSMsg(*point_cloud, pc_msg);
-                point_cloud_pub->publish(pc_msg);
-            }
+            scan_pub->publish(std::move(scan));
         }
-        count_num = 0;
+        if (pubPointCloud2) {
+            std::vector<ScanPoint> points;
+            rclcpp::Time start_time;
+            float scan_time;
+            this->getScan(points, start_time, scan_time);
+            VPointCloud::Ptr point_cloud(new VPointCloud());
+            if (use_gps_ts) {
+                start_time = rclcpp::Time(sweep_end_time_gps, sweep_end_time_hardware);
+            }
+            double timestamp = start_time.seconds();
+            point_cloud->header.stamp = static_cast<uint64_t>(timestamp * 1e6);
+            point_cloud->header.frame_id = frame_id;
+            point_cloud->height = 1;
+            for (uint16_t i = 0; i < count_num; i++) {
+                double degree = 360.0 - points[i].degree;
+                bool pass_point = false;
+                if (angle_able_max < 360) {
+                    if (degree < angle_able_min || degree > angle_able_max) pass_point = true;
+                } else {
+                    if (degree < angle_able_min && degree > (angle_able_max - 360)) pass_point = true;
+                }
+                if (points[i].range < 0.001) pass_point = true;
+                if (!pass_point) {
+                    // printf("degree = %f\n",degree);
+                    // printf("angle_able_min = %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
+                    VPoint point;
+                    int point_idx = round(degree * count_num / 360);
+                    point.timestamp = timestamp - point_idx * (scan_time / count_num);
+                    // printf("timestamp = %f\n",point.timestamp);
+                    point.x = points[i].range * cos(M_PI / 180 * points[i].degree);
+                    point.y = -points[i].range * sin(M_PI / 180 * points[i].degree);
+                    point.z = 0;
+                    point.intensity = points[i].intensity;
+                    point_cloud->points.push_back(point);
+                    ++point_cloud->width;
+                }
+            }
+            sensor_msgs::msg::PointCloud2 pc_msg;
+            pcl::toROSMsg(*point_cloud, pc_msg);
+            point_cloud_pub->publish(pc_msg);
+        }
+        count_num_ = 0;
         wait_for_wake = true;
         if (first_compensation && compensation) {
             lidar_difop();
