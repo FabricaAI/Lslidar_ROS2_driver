@@ -253,22 +253,22 @@ void LslidarDriver::lidar_order(const std_msgs::msg::Int8::SharedPtr msg) {
             data[187] = 0xFB;
 
             if (lidar_name == "M10" || lidar_name == "M10_GPS" || lidar_name == "M10_P" || lidar_name == "M10_DOUBLE") {
-                if (i <= 1) { // 雷达启停
+                if (i <= 1) { // lidar start/stop
                     data[184] = 0x01;
                     data[185] = char(i);
-                } else if (i == 2) { // 雷达点云不滤波
+                } else if (i == 2) { // point cloud unfiltered
                     data[181] = 0x0A;
                     data[184] = 0x06;
                     if (is_start) data[185] = 0x01;
-                } else if (i == 3) { // 雷达点云正常滤波
+                } else if (i == 3) { // point cloud normal filtering
                     data[181] = 0x0B;
                     data[184] = 0x06;
                     if (is_start) data[185] = 0x01;
-                } else if (i == 4) { // 雷达近距离滤波
+                } else if (i == 4) { // close range filtering
                     data[181] = 0x0C;
                     data[184] = 0x06;
                     if (is_start) data[185] = 0x01;
-                } else if (i == 100) { // 接收设备包
+                } else if (i == 100) { // device package
                     data[184] = 0x08;
                     data[185] = 0x01;
                 } else return;
