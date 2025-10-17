@@ -31,7 +31,7 @@ int LSIOSR::setOpt(int nBits, uint8_t nEvent, int nStop) {
     bzero(&newtio, sizeof(newtio));
     /*步骤一，设置字符大小*/
     newtio.c_cflag |= CLOCAL; //如果设置，modem 的控制线将会被忽略。如果没有设置，则 open()函数会阻塞直到载波检测线宣告
-                              //modem 处于摘机状态为止。
+                              // modem 处于摘机状态为止。
     newtio.c_cflag |= CREAD; //使端口能读取输入的数据
     /*设置每个数据的位数*/
     switch (nBits) {
@@ -161,6 +161,8 @@ int LSIOSR::read(unsigned char* buffer, int length, int timeout) {
     return totalBytesRead;
 }
 
+// attempt to async read from serial with timeout of millis
+// returns 1 if no error 0 if timeout, -1 if error
 int LSIOSR::waitReadable(int millis) {
     if (fd_ < 0) {
         return -1;
