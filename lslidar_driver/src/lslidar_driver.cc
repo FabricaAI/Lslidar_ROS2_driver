@@ -130,7 +130,7 @@ bool LslidarDriver::loadParameters() {
     count_num_ = 0;
 
     scan_points_.resize(6000);
-
+    /*
     if (lidar_name == "M10") {
         use_gps_ts = false;
         PACKET_SIZE = 92;
@@ -140,14 +140,6 @@ bool LslidarDriver::loadParameters() {
         rpm_bits_start_ = 4;
         baud_rate_ = 460800;
         points_size_ = 1008;
-    } else if (lidar_name == "M10_P") {
-        PACKET_SIZE = 160;
-        package_points_ = 70;
-        data_bits_start_ = 8;
-        degree_bits_start_ = 4;
-        rpm_bits_start_ = 6;
-        baud_rate_ = 500000;
-        points_size_ = 2000;
     } else if (lidar_name == "M10_PLUS") {
         PACKET_SIZE = 104;
         package_points_ = 41;
@@ -202,7 +194,17 @@ bool LslidarDriver::loadParameters() {
         points_size_ = 2000;
         use_gps_ts = false;
         compensation = false;
-    }
+    } else
+    */
+    // if (lidar_name == "M10_P") {
+    PACKET_SIZE = 160;
+    package_points_ = 70;
+    data_bits_start_ = 8;
+    degree_bits_start_ = 4;
+    rpm_bits_start_ = 6;
+    baud_rate_ = 500000;
+    points_size_ = 2000;
+    // }
     RCLCPP_INFO_STREAM(this->get_logger(), "Lidar is " << lidar_name.c_str());
 
     if (pubScan) scan_pub = this->create_publisher<sensor_msgs::msg::LaserScan>(scan_topic, 10);
@@ -433,41 +435,43 @@ void LslidarDriver::recvThread_crc(int& count, int& link_time) {
     }
 }
 
-int LslidarDriver::receive_data(unsigned char* packet_bytes) {
+int LslidarDriver::receive_data(unsigned char* dst) {
     int link_time = 0;
     int len_H = 0;
     int len_L = 0;
     int len = 0;
     int count_2 = 0;
-    int count = 0;
+    int curr_packet_count = 0;
 
     // read the first two start of frame bytes
-    while (count <= 0) {
-        count = serial_->read(packet_bytes, 1);
-        LslidarDriver::recvThread_crc(count, link_time);
+    while (curr_packet_count < 1) {
+        curr_packet_count = serial_->read(dst, 1);
+        LslidarDriver::recvThread_crc(curr_packet_count, link_time);
     }
-    if (packet_bytes[0] != 0xA5) return 0;
+    if (dst[0] != 0xA5) return 0;
 
-    while (count_2 <= 0) {
-        count_2 = serial_->read(packet_bytes + count, 1);
-        if (count_2 > 0) count += count_2;
+    while (count_2 < 1) {
+        count_2 = serial_->read(dst + curr_packet_count, 1);
+        if (count_2 > 0) curr_packet_count += count_2;
         LslidarDriver::recvThread_crc(count_2, link_time);
     }
 
     count_2 = 0;
-    if (packet_bytes[1] != 0x5A) return 0;
+    if (dst[1] != 0x5A) return 0;
 
     // next two bytes determine size of frame
     int bytes_to_read = 2;
-    while (count_2 < bytes_to_read) {
-        int result = serial_->read(packet_bytes + count, bytes_to_read - count_2);
+    int curr_bytes_read = 0;
+    while (curr_bytes_read < bytes_to_read) {
+        int result = serial_->read(dst + curr_packet_count, bytes_to_read - curr_bytes_read);
+        if (result > 0) {
+            curr_packet_count += result;
+            curr_bytes_read += result;
+        }
         if (result < 2) {
             RCLCPP_WARN(this->get_logger(), "size read result < 2: %d", result);
         }
         LslidarDriver::recvThread_crc(result, link_time);
-        if (result > 0) {
-            count_2 += result;
-        }
     }
 
     count_2 = 0;
@@ -477,19 +481,24 @@ int LslidarDriver::receive_data(unsigned char* packet_bytes) {
     // else if (lidar_name == "N10_P") len = 108;
     // else if (lidar_name == "N10" || lidar_name == "L10") len = packet_bytes[2];
     // else {
-    // TODO: sanity check this length value please
-    len_H = packet_bytes[2];
-    len_L = packet_bytes[3];
+    len_H = dst[2];
+    len_L = dst[3];
     len = len_H * 256 + len_L;
+    // typical length is 158 to 160 bytes long
+    if (len > 160 || len < 158) {
+        RCLCPP_WARN(this->get_logger(), "Bad length read. len = %d. Skipping sample", len);
+        return 0;
+    }
     // }
     if (lidar_name == "M10" || lidar_name == "M10_DOUBLE" || lidar_name == "M10_GPS" || lidar_name == "M10_P"
         || lidar_name == "M10_PLUS") {
-        if (packet_bytes[2] == 0x55 && packet_bytes[3] == 0x00) len = 188;
+        if (dst[2] == 0x55 && dst[3] == 0x00) len = 188;
     }
     RCLCPP_DEBUG(this->get_logger(), "len = %d", len);
-    while (count < len) {
-        count_2 = serial_->read(packet_bytes + count, len - count);
-        if (count_2 >= 0) count += count_2;
+    // RCLCPP_INFO(this->get_logger(), "len = %d", len);
+    while (curr_packet_count < len) {
+        count_2 = serial_->read(dst + curr_packet_count, len - curr_packet_count);
+        if (count_2 >= 0) curr_packet_count += count_2;
         LslidarDriver::recvThread_crc(count_2, link_time);
     }
     // if (lidar_name == "N10" || lidar_name == "L10" || lidar_name == "N10_P") {
@@ -524,6 +533,9 @@ void LslidarDriver::difop_processing(unsigned char* packet_bytes) // 处理设�
 
 void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处理每一包的数据
 {
+    if (len == 0) {
+        return;
+    }
     double degree;
     double end_degree;
     double degree_interval = 15.0;
@@ -622,7 +634,7 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
                 if (inten_temp) scan_points_[idx_].intensity = 255;
                 else scan_points_[idx_].intensity = 0;
             }
-            if ((degree + (degree_interval / valid_points * num)) > 360)
+            if ((degree + (degree_interval / valid_points_count * num)) > 360)
                 scan_points_[idx_].degree = degree + (degree_interval / valid_points_count * num) - 360;
             else scan_points_[idx_].degree = degree + (degree_interval / valid_points_count * num);
         } else continue;
@@ -1050,7 +1062,6 @@ void LslidarDriver::pubScanThread() {
 
 bool LslidarDriver::polling() {
     if (!is_start) return true;
-    // Allocate a new shared pointer for zero-copy sharing with other nodelets.
     unsigned char* packet_bytes = new unsigned char[500];
     int len = 0;
     bool difop = false;
@@ -1087,6 +1098,7 @@ bool LslidarDriver::polling() {
                 int len_L = packet->data[3];
                 len = len_H * 256 + len_L;
             }
+            RCLCPP_DEBUG(this->get_logger(), "len = %d", len);
             if ((lidar_name == "M10" || lidar_name == "M10_DOUBLE" || lidar_name == "M10_GPS" || lidar_name == "M10_P"
                     || lidar_name == "M10_PLUS")
                 && compensation) {
@@ -1132,9 +1144,10 @@ bool LslidarDriver::polling() {
                         int len_L = packet_bytes[3];
                         len = len_H * 256 + len_L;
                     }
-                    if (lidar_name == "N10_P" || lidar_name == "M10_DOUBLE")
-                        LslidarDriver::data_processing_2(packet_bytes, len);
-                    else LslidarDriver::data_processing(packet_bytes, len);
+                    // if (lidar_name == "N10_P" || lidar_name == "M10_DOUBLE")
+                    // LslidarDriver::data_processing_2(packet_bytes, len);
+                    // else
+                    LslidarDriver::data_processing(packet_bytes, len);
                     usleep(usleep_time);
                 }
             }
@@ -1158,8 +1171,9 @@ bool LslidarDriver::polling() {
     }
     if (difop) LslidarDriver::difop_processing(packet_bytes);
     else {
-        if (lidar_name == "N10_P" || lidar_name == "M10_DOUBLE") LslidarDriver::data_processing_2(packet_bytes, len);
-        else LslidarDriver::data_processing(packet_bytes, len);
+        // if (lidar_name == "N10_P" || lidar_name == "M10_DOUBLE") LslidarDriver::data_processing_2(packet_bytes, len);
+        // else
+        LslidarDriver::data_processing(packet_bytes, len);
     }
     delete[] packet_bytes;
     return true;

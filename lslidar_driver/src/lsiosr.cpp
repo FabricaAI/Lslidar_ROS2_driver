@@ -161,6 +161,8 @@ int LSIOSR::read(unsigned char* buffer, int length, int timeout) {
     return totalBytesRead;
 }
 
+// attempt to async read from serial with timeout of millis
+// returns 1 if no error 0 if timeout, -1 if error
 int LSIOSR::waitReadable(int millis) {
     if (fd_ < 0) {
         return -1;
