@@ -73,9 +73,9 @@ bool LslidarDriver::loadParameters() {
     angle_disable_min = 0.0;
     angle_disable_max = 0.0;
 
-    this->declare_parameter<std::string>("lidar_name", "M10");
-    this->declare_parameter<std::string>("frame_id", "laser_link");
-    this->declare_parameter<std::string>("scan_topic", "/scan");
+    this->declare_parameter<std::string>("lidar_name", "M10_P");
+    this->declare_parameter<std::string>("frame_id", "lidar_link");
+    this->declare_parameter<std::string>("scan_topic", "/scan_raw");
     this->declare_parameter<std::string>("pointcloud_topic", "/lslidar_point_cloud");
     this->declare_parameter<double>("min_range", 0.3);
     this->declare_parameter<double>("max_range", 100.0);
@@ -86,7 +86,7 @@ bool LslidarDriver::loadParameters() {
     this->declare_parameter<bool>("pubPointCloud2", false);
     this->declare_parameter<double>("angle_disable_min", 0.0);
     this->declare_parameter<double>("angle_disable_max", 0.0);
-    this->declare_parameter<std::string>("interface_selection", "net");
+    this->declare_parameter<std::string>("interface_selection", "serial");
 
     this->get_parameter("lidar_name", lidar_name);
     this->get_parameter("frame_id", frame_id);
@@ -574,7 +574,8 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
     invalidValue = package_points - invalidValue;
     if (lidar_name == "N10" || lidar_name == "L10") invalidValue--;
     if (invalidValue <= 1) {
-        delete packet_bytes;
+        // double free
+        // delete packet_bytes;
         return;
     }
 
@@ -628,11 +629,12 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
             idx++;
         }
     }
-    packet_bytes = { 0x00 };
-    if (packet_bytes) {
-        packet_bytes = NULL;
-        delete packet_bytes;
-    }
+    // potential double free
+    // packet_bytes = { 0x00 };
+    // if (packet_bytes) {
+    //     packet_bytes = NULL;
+    //     delete packet_bytes;
+    // }
 }
 
 void LslidarDriver::data_processing_2(unsigned char* packet_bytes, int len) // 处理每一包的数据
@@ -1129,7 +1131,7 @@ bool LslidarDriver::polling() {
         if (lidar_name == "N10_P" || lidar_name == "M10_DOUBLE") LslidarDriver::data_processing_2(packet_bytes, len);
         else LslidarDriver::data_processing(packet_bytes, len);
     }
-    delete packet_bytes;
+    delete[] packet_bytes;
     return true;
 }
 
