@@ -18,49 +18,49 @@
 #ifndef LSLIDAR_DRIVER_H
 #define LSLIDAR_DRIVER_H
 
-#include <netinet/in.h>
-#include <stdio.h>
-#include <string>
 #include <unistd.h>
+#include <stdio.h>
+#include <netinet/in.h>
+#include <string>
 
+#include <boost/shared_ptr.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
+#include <boost/thread.hpp>
+#include "rclcpp/rclcpp.hpp"
+#include <thread>
 #include "diagnostic_updater/diagnostic_updater.hpp"
 #include "diagnostic_updater/publisher.hpp"
 #include "lslidar_msgs/msg/lslidar_packet.hpp"
-#include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/byte.hpp"
-#include <boost/date_time/posix_time/posix_time.hpp>
-#include <boost/shared_ptr.hpp>
-#include <boost/thread.hpp>
-#include <thread>
 
-#include "pcl/point_types.h"
-#include "pcl_conversions/pcl_conversions.h"
 #include "sensor_msgs/msg/point_cloud2.hpp"
+#include "pcl_conversions/pcl_conversions.h"
+#include "pcl/point_types.h"
 
+#include "time.h"
 #include "input.h"
 #include "lsiosr.h"
 #include "sensor_msgs/msg/laser_scan.hpp"
-#include "time.h"
 namespace lslidar_driver {
 
 struct PointXYZIT {
     PCL_ADD_POINT4D;
     uint8_t intensity;
     double timestamp;
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // make sure our new allocators are aligned
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW  // make sure our new allocators are aligned
 } EIGEN_ALIGN16;
-
+ 
 typedef struct {
     double degree;
     double range;
     double intensity;
 } ScanPoint;
 
-class LslidarDriver : public rclcpp::Node {
+class LslidarDriver: public rclcpp::Node {
 public:
-    LslidarDriver();
-    LslidarDriver(const rclcpp::NodeOptions& options);
-    ~LslidarDriver();
+	LslidarDriver();
+	LslidarDriver(const rclcpp::NodeOptions& options);
+	~LslidarDriver();
 
     bool initialize();
     bool polling();
@@ -68,41 +68,40 @@ public:
     typedef std::shared_ptr<LslidarDriver> LslidarDriverPtr;
     typedef std::shared_ptr<const LslidarDriver> LslidarDriverConstPtr;
 
-private:
+private:    
     uint64_t get_gps_stamp(struct tm t);
-    uint8_t N10_CalCRC8(unsigned char* p, int len);
+    uint8_t N10_CalCRC8(unsigned char * p, int len);
     bool loadParameters();
     bool createRosIO();
     void open_serial();
     void lidar_difop();
     void lidar_order(const std_msgs::msg::Int8::SharedPtr msg);
-    void data_processing(unsigned char* packet_bytes, int len);
-    void data_processing_2(unsigned char* packet_bytes, int len);
-    void difop_processing(unsigned char* packet_bytes);
+    void data_processing(unsigned char *packet_bytes,int len);
+    void data_processing_2(unsigned char *packet_bytes,int len);
+    void difop_processing(unsigned char *packet_bytes);
     void pubScanThread();
-    void recvThread_crc(int& count, int& link_time);
-    int receive_data(unsigned char* packet_bytes);
-    int getScan(std::vector<ScanPoint>& points, rclcpp::Time& scan_time, float& scan_duration);
+    void recvThread_crc(int &count,int &link_time);
+    int receive_data(unsigned char *packet_bytes);
+    int getScan(std::vector<ScanPoint> &points, rclcpp::Time &scan_time, float &scan_duration);
 
-    boost::thread* pubscan_thread_;
+    boost::thread *pubscan_thread_ ;
     boost::shared_ptr<Input> msop_input_;
-    boost::mutex mutex_;
+    boost::mutex mutex_; 
     boost::mutex pubscan_mutex_;
     boost::condition_variable pubscan_cond_;
-
-    int UDP_PORT_NUMBER;
+    int UDP_PORT_NUMBER; 
     int count_num;
     int package_points;
     int data_bits_start;
     int degree_bits_start;
     int end_degree_bits_start;
     int rpm_bits_start;
-    int baud_rate_;
+	int baud_rate_;
     int points_size_;
     int idx = 0;
     int link_time = 0;
 
-    bool use_gps_ts;
+    bool use_gps_ts;   
     bool is_start;
     bool high_reflection;
     bool compensation;
@@ -116,10 +115,10 @@ private:
     double angle_disable_max;
     double angle_able_min;
     double angle_able_max;
-    double last_degree = 0.0;
+    double last_degree = 0.0;	
     double degree_compensation = 0.0;
 
-    uint16_t PACKET_SIZE;
+    uint16_t PACKET_SIZE ;
     uint64_t sweep_end_time_gps;
     uint64_t sweep_end_time_hardware;
     uint64_t sub_second;
@@ -132,8 +131,8 @@ private:
     std::string dump_file;
     std::string pointcloud_topic;
     std::string in_file_name;
-
-    tm pTime;
+    
+    tm pTime;    
     rclcpp::Time pre_time_;
     rclcpp::Time time_;
     std::vector<ScanPoint> scan_points_;
@@ -145,13 +144,15 @@ private:
     double diag_max_freq;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_pub;
-    rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr difop_switch;
-    LSIOSR* serial_;
+	rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr difop_switch;
+    LSIOSR * serial_;
 };
 typedef PointXYZIT VPoint;
 typedef pcl::PointCloud<VPoint> VPointCloud;
 
 } // namespace lslidar_driver
 POINT_CLOUD_REGISTER_POINT_STRUCT(lslidar_driver::PointXYZIT,
-    (float, x, x)(float, y, y)(float, z, z)(std::uint8_t, intensity, intensity)(double, timestamp, timestamp))
+                                  (float, x, x)(float, y, y)(float, z, z)(
+                                          std::uint8_t, intensity,
+                                          intensity)(double, timestamp, timestamp))
 #endif // _LSLIDAR_DRIVER_H_
