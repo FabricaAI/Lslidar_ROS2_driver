@@ -354,7 +354,7 @@ bool LslidarDriver::createRosIO() {
     // ROS diagnostics
     diagnostics.setHardwareID("Lslidar");
 
-    const double diag_freq = 12 * 24;
+    const double diag_freq = 12 * 24; // 288hz diagnostic frequency
     diag_max_freq = diag_freq;
     diag_min_freq = diag_freq;
     RCLCPP_INFO(this->get_logger(), "expected frequency: %.3f (Hz)", diag_freq);
@@ -367,7 +367,7 @@ bool LslidarDriver::createRosIO() {
     if (lidar_name == "M10_P") hz = 12;
     else if (lidar_name == "M10_PLUS") hz = 20;
 
-    double packet_rate = hz * 24;
+    double packet_rate = hz * 24; // 288hz packet rate
     if (dump_file != "") {
         msop_input_.reset(new lslidar_driver::InputPCAP(this, UDP_PORT_NUMBER, packet_rate, dump_file));
     } else {
@@ -1055,6 +1055,7 @@ bool LslidarDriver::polling() {
     int len = 0;
     bool difop = false;
     if (interface_selection == "net") {
+        // FIXME: why??? it's just time stamp and 2kb buffer of data.
         auto packet = lslidar_msgs::msg::LslidarPacket::UniquePtr(new lslidar_msgs::msg::LslidarPacket());
 
         std_msgs::msg::Byte msg;
@@ -1064,6 +1065,8 @@ bool LslidarDriver::polling() {
             // keep reading until full packet received
             len = msop_input_->getPacket(packet);
             if (packet->data[0] == 0x5a) {
+                // FIXME: this clause is in cases of a dropped byte??
+                // TODO: profile this
                 if (lidar_name == "N10" || lidar_name == "L10") len = 58;
                 else if (lidar_name == "M10") len = 92;
                 else if (lidar_name == "N10_P") len = 108;
@@ -1078,6 +1081,7 @@ bool LslidarDriver::polling() {
                 packet->data[0] = 0xa5;
             }
 
+            // FIXME: this is really really messy.
             if (lidar_name == "N10" || lidar_name == "L10") len = 58;
             else if (lidar_name == "M10") len = 92;
             else if (lidar_name == "N10_P") len = 108;
@@ -1093,6 +1097,8 @@ bool LslidarDriver::polling() {
                 && compensation) {
                 if (packet->data[2] == 0x55 && packet->data[3] == 0x00 && packet->data[186] == 0xFA
                     && packet->data[187] == 0xFB) {
+                    // INFO: this is some protocol magic packet thing that requires some different processing
+                    // TODO: profile this path as well
                     len = 188;
                     difop = true;
                 }
@@ -1102,6 +1108,8 @@ bool LslidarDriver::polling() {
             for (int i = 0; i < len; i++) {
                 packet_bytes[i] = packet->data[i];
             }
+
+            // FIXME: whatever we're using doesnt use crc although I would love to.
             if ((lidar_name == "N10" || lidar_name == "L10" || lidar_name == "N10_P")
                 && packet_bytes[len - 1] != N10_CalCRC8(packet_bytes, len - 1))
                 continue;
@@ -1149,6 +1157,7 @@ bool LslidarDriver::polling() {
                 if ((lidar_name == "M10" || lidar_name == "M10_DOUBLE" || lidar_name == "M10_GPS"
                         || lidar_name == "M10_P" || lidar_name == "M10_PLUS")
                     && compensation) {
+                    // INFO: if we're not using compensation at all then this is redundant
                     if (packet_bytes[2] == 0x55 && packet_bytes[3] == 0x00 && packet_bytes[186] == 0xFA
                         && packet_bytes[187] == 0xFB)
                         difop = true;
