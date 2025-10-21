@@ -31,6 +31,13 @@
 #include "rclcpp/rclcpp.hpp"
 #include <functional>
 
+int truncated_mode_ = 0; // 多角度屏蔽开关：默认为0，如果需要屏蔽多个角度，则truncated_mode_赋值为1。
+
+int scan_crop_min[] = { 0, 180 }; // 雷达屏蔽角度，这里屏蔽角度为135°到225°，
+                                  // 如果要多角度屏蔽，如10~30，50~60，改为：
+                                  // scan_angle_min[]={10，50};scan_angle_max[]={30，60};
+int scan_crop_max[] = { 90, 270 }; // 修改后编译即可
+
 namespace lslidar_driver {
 
 static void my_hander(int sig) {
@@ -200,9 +207,8 @@ bool LslidarDriver::loadParameters() {
 
     if (pubScan) scan_pub = this->create_publisher<sensor_msgs::msg::LaserScan>(scan_topic, 10);
     if (pubPointCloud2) point_cloud_pub = this->create_publisher<sensor_msgs::msg::PointCloud2>(pointcloud_topic, 10);
-    difop_switch = this->create_subscription<std_msgs::msg::Int8>("lslidar_order", 1,
-        std::bind(&LslidarDriver::lidar_order, this,
-            std::placeholders::_1)); // 转速输入
+    difop_switch = this->create_subscription<std_msgs::msg::Int8>(
+        "lslidar_order", 1, std::bind(&LslidarDriver::lidar_order, this, std::placeholders::_1)); // 转速输入
     return true;
 }
 
@@ -323,7 +329,7 @@ void LslidarDriver::open_serial() {
     diagnostics.setHardwareID("Lslidar");
     int code = 0;
     serial_port_ = std::string("/dev/ttyUSB0");
-    this->declare_parameter<std::string>("serial_port_", "/dev/serial/by-path/platform-3610000.usb-usb-0:2.4.1:1.0");
+    this->declare_parameter<std::string>("serial_port_", "/dev/ttyUSB0");
     this->get_parameter("serial_port_", serial_port_);
     serial_ = LSIOSR::instance(serial_port_, baud_rate_);
     code = serial_->init();
@@ -469,7 +475,6 @@ int LslidarDriver::receive_data(unsigned char* packet_bytes) {
         || lidar_name == "M10_PLUS") {
         if (packet_bytes[2] == 0x55 && packet_bytes[3] == 0x00) len = 188;
     }
-    // RCLCPP_INFO(this->get_logger(), "len = %d", len);
     while (count < len) {
         count_2 = serial_->read(packet_bytes + count, len - count);
         if (count_2 >= 0) count += count_2;
@@ -505,8 +510,7 @@ void LslidarDriver::difop_processing(unsigned char* packet_bytes) // 处理设�
     return;
 }
 
-void LslidarDriver::data_processing(unsigned char* packet_bytes,
-    int len) // 处理每一包的数据
+void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处理每一包的数据
 {
     double degree;
     double end_degree;
@@ -625,16 +629,15 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes,
             idx++;
         }
     }
-    packet_bytes = { 0x00 };
     // potential double free
+    // packet_bytes = { 0x00 };
     // if (packet_bytes) {
     //     packet_bytes = NULL;
     //     delete packet_bytes;
     // }
 }
 
-void LslidarDriver::data_processing_2(unsigned char* packet_bytes,
-    int len) // 处理每一包的数据
+void LslidarDriver::data_processing_2(unsigned char* packet_bytes, int len) // 处理每一包的数据
 {
     double degree;
     double end_degree;
@@ -776,7 +779,9 @@ void LslidarDriver::pubScanThread() {
         if (lidar_name == "N10_P" || lidar_name == "M10_DOUBLE") {
             if (pubScan) {
                 auto scan = sensor_msgs::msg::LaserScan::UniquePtr(new sensor_msgs::msg::LaserScan());
-                int scan_num = count_num * 2;
+                ////int scan_num = count_num * 2;
+                int scan_num = count_num;
+
                 std::vector<ScanPoint> points;
                 rclcpp::Time start_time;
                 float scan_time;
@@ -815,14 +820,29 @@ void LslidarDriver::pubScanThread() {
                         scan->ranges[point_idx] = (float)dist;
                         scan->intensities[point_idx] = points[i].intensity;
                     }
-                    if (points[i + 3000].range == 0.0) {
-                        scan->ranges[point_idx + count_num] = std::numeric_limits<float>::infinity();
-                        scan->intensities[point_idx + count_num] = 0;
-                    } else {
-                        double dist = points[i + 3000].range;
-                        scan->ranges[point_idx + count_num] = (float)dist;
-                        scan->intensities[point_idx + count_num] = points[i + 3000].intensity;
+
+                    if (truncated_mode_) {
+                        int len = sizeof(scan_crop_max) / sizeof(scan_crop_max[0]);
+                        for (int j = 0; j < len; ++j) {
+                            if ((point_idx >= (scan_crop_min[j] * count_num / 360))
+                                && (point_idx <= (scan_crop_max[j] * count_num / 360))) {
+                                scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
+                                scan->intensities[point_idx] = 0;
+                            }
+                        }
                     }
+                    /*
+                    if (points[i + 3000].range == 0.0)
+                    {
+                            scan->ranges[point_idx + count_num] = std::numeric_limits<float>::infinity();
+                            scan->intensities[point_idx + count_num] = 0;
+                    }
+                    else
+                    {
+                            double dist = points[i+3000].range;
+                            scan->ranges[point_idx + count_num] = (float)dist;
+                            scan->intensities[point_idx + count_num] = points[i + 3000].intensity;
+                    }*/
                 }
                 scan_pub->publish(std::move(scan));
             }
@@ -852,8 +872,7 @@ void LslidarDriver::pubScanThread() {
                     if (points[i].range < 0.001) pass_point = true;
                     if (!pass_point) {
                         // printf("degree = %f\n",degree);
-                        // printf("angle_able_min =
-                        // %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
+                        // printf("angle_able_min = %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
                         VPoint point;
                         int point_idx = round(degree * count_num / 360);
                         point.timestamp = timestamp - point_idx * (scan_time / count_num);
@@ -868,8 +887,7 @@ void LslidarDriver::pubScanThread() {
                     if (points[i + 3000].range < 0.001) pass_point = true;
                     if (!pass_point) {
                         // printf("degree = %f\n",degree);
-                        // printf("angle_able_min =
-                        // %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
+                        // printf("angle_able_min = %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
                         VPoint point;
                         int point_idx = round(degree * count_num / 360);
                         point.timestamp = timestamp - point_idx * (scan_time / count_num);
@@ -890,6 +908,7 @@ void LslidarDriver::pubScanThread() {
             if (pubScan) {
                 auto scan = sensor_msgs::msg::LaserScan::UniquePtr(new sensor_msgs::msg::LaserScan());
                 int scan_num = ceil((angle_able_max - angle_able_min) / 360 * count_num) + 1;
+
                 std::vector<ScanPoint> points;
                 rclcpp::Time start_time;
                 float scan_time;
@@ -934,7 +953,19 @@ void LslidarDriver::pubScanThread() {
                         scan->ranges[point_idx] = (float)dist;
                     }
                     scan->intensities[point_idx] = points[i].intensity;
+
+                    if (truncated_mode_) {
+                        int len = sizeof(scan_crop_max) / sizeof(scan_crop_max[0]);
+                        for (int j = 0; j < len; ++j) {
+                            if ((point_idx >= (scan_crop_min[j] * count_num / 360))
+                                && (point_idx <= (scan_crop_max[j] * count_num / 360))) {
+                                scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
+                                scan->intensities[point_idx] = 0;
+                            }
+                        }
+                    }
                 }
+
                 scan_pub->publish(std::move(scan));
             }
             if (pubPointCloud2) {
@@ -961,8 +992,7 @@ void LslidarDriver::pubScanThread() {
                     if (points[i].range < 0.001) pass_point = true;
                     if (!pass_point) {
                         // printf("degree = %f\n",degree);
-                        // printf("angle_able_min =
-                        // %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
+                        // printf("angle_able_min = %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
                         VPoint point;
                         int point_idx = round(degree * count_num / 360);
                         point.timestamp = timestamp - point_idx * (scan_time / count_num);

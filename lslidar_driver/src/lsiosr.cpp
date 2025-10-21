@@ -30,9 +30,9 @@ int LSIOSR::setOpt(int nBits, uint8_t nEvent, int nStop) {
     }
     bzero(&newtio, sizeof(newtio));
     /*步骤一，设置字符大小*/
-    newtio.c_cflag |= CLOCAL; //如果设置，modem 的控制线将会被忽略。如果没有设置，则 open()函数会阻塞直到载波检测线宣告
-                              //modem 处于摘机状态为止。
-    newtio.c_cflag |= CREAD; //使端口能读取输入的数据
+    newtio.c_cflag |= CLOCAL; // 如果设置，modem 的控制线将会被忽略。如果没有设置，则 open()函数会阻塞直到载波检测线宣告
+                              // modem 处于摘机状态为止。
+    newtio.c_cflag |= CREAD; // 使端口能读取输入的数据
     /*设置每个数据的位数*/
     switch (nBits) {
     case 7:
@@ -44,17 +44,17 @@ int LSIOSR::setOpt(int nBits, uint8_t nEvent, int nStop) {
     }
     /*设置奇偶校验位*/
     switch (nEvent) {
-    case 'O': //奇数
+    case 'O': // 奇数
         newtio.c_iflag |= (INPCK | ISTRIP);
-        newtio.c_cflag |= PARENB; //使能校验，如果不设PARODD则是偶校验
-        newtio.c_cflag |= PARODD; //奇校验
+        newtio.c_cflag |= PARENB; // 使能校验，如果不设PARODD则是偶校验
+        newtio.c_cflag |= PARODD; // 奇校验
         break;
-    case 'E': //偶数
+    case 'E': // 偶数
         newtio.c_iflag |= (INPCK | ISTRIP);
         newtio.c_cflag |= PARENB;
         newtio.c_cflag &= ~PARODD;
         break;
-    case 'N': //无奇偶校验位
+    case 'N': // 无奇偶校验位
         newtio.c_cflag &= ~PARENB;
         break;
     }
@@ -300,7 +300,7 @@ int LSIOSR::init() {
     fd_ = open(port_.c_str(), O_RDWR | O_NOCTTY | O_NDELAY);
     if (0 < fd_) {
         error_code = 0;
-        setOpt(DATA_BIT_8, PARITY_NONE, STOP_BIT_1); //设置串口参数
+        setOpt(DATA_BIT_8, PARITY_NONE, STOP_BIT_1); // 设置串口参数
         // printf("open_port %s  OK !\n", port_.c_str());
     } else {
         error_code = -1;
