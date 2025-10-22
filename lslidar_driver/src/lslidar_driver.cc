@@ -675,7 +675,6 @@ void LslidarDriver::data_processing(unsigned char* packet_bytes, int len) // 处
 /*
 void LslidarDriver::data_processing_2(unsigned char* packet_bytes,
     int len) // 处理每一包的数据
->>>>>>> bd14958 (fix(lidar) commented out irrelevant code to us, cleaned up stuff)
 {
     double degree;
     double end_degree;
@@ -996,6 +995,17 @@ void LslidarDriver::pubScanThread() {
                     scan->ranges[point_idx] = (float)dist;
                 }
                 scan->intensities[point_idx] = points[i].intensity;
+
+                if (truncated_mode_) {
+                    int len = sizeof(scan_crop_max) / sizeof(scan_crop_max[0]);
+                    for (int j = 0; j < len; ++j) {
+                        if ((point_idx >= (scan_crop_min[j] * count_num_ / 360))
+                            && (point_idx <= (scan_crop_max[j] * count_num_ / 360))) {
+                            scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
+                            scan->intensities[point_idx] = 0;
+                        }
+                    }
+                }
             }
             scan_pub->publish(std::move(scan));
         }
