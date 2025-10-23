@@ -23,8 +23,8 @@ Input::Input(rclcpp::Node* private_nh, uint16_t port) : private_nh_(private_nh),
     group_ip = std::string("224.1.1.2");
     UDP_PORT_NUMBER_DIFOP = 2369;
 
-    private_nh->declare_parameter<std::string>("device_ip", "192.168.1.102");
-    private_nh->declare_parameter<std::string>("device_ip_difop", "192.168.1.200");
+    private_nh->declare_parameter<std::string>("device_ip", "192.168.1.200");
+    private_nh->declare_parameter<std::string>("device_ip_difop", "192.168.1.102");
     private_nh->declare_parameter<bool>("add_multicast", false);
     private_nh->declare_parameter<std::string>("group_ip", "224.1.1.2");
     private_nh->declare_parameter<int>("difop_port", 2369);

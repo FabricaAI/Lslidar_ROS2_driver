@@ -86,7 +86,7 @@ bool LslidarDriver::loadParameters() {
     this->declare_parameter<bool>("pubPointCloud2", false);
     this->declare_parameter<double>("angle_disable_min", 0.0);
     this->declare_parameter<double>("angle_disable_max", 0.0);
-    this->declare_parameter<std::string>("interface_selection", "serial");
+    this->declare_parameter<std::string>("interface_selection", "net");
 
     this->get_parameter("lidar_name", lidar_name);
     this->get_parameter("frame_id", frame_id);
@@ -1089,6 +1089,8 @@ bool LslidarDriver::polling() {
                 for (int i = len - 1; i > 0; i--)
                     packet->data[i] = packet->data[i - 1];
                 packet->data[0] = 0xa5;
+                RCLCPP_WARN(this->get_logger(), "Only second magic byte in packet!");
+                RCLCPP_WARN(this->get_logger(), "len = %d", len);
             }
 
             // FIXME: this is really really messy.
@@ -1101,7 +1103,7 @@ bool LslidarDriver::polling() {
                 int len_L = packet->data[3];
                 len = len_H * 256 + len_L;
             }
-            RCLCPP_DEBUG(this->get_logger(), "len = %d", len);
+            RCLCPP_INFO(this->get_logger(), "len = %d", len);
             if ((lidar_name == "M10" || lidar_name == "M10_DOUBLE" || lidar_name == "M10_GPS" || lidar_name == "M10_P"
                     || lidar_name == "M10_PLUS")
                 && compensation) {
@@ -1109,20 +1111,27 @@ bool LslidarDriver::polling() {
                     && packet->data[187] == 0xFB) {
                     // INFO: this is some protocol magic packet thing that requires some different processing
                     // TODO: profile this path as well
+                    RCLCPP_WARN(this->get_logger(), "len = 0x5500, data[186-187] = 0xFAFB, so len = 188.");
                     len = 188;
                     difop = true;
                 }
             }
 
-            if (len <= 0 || len >= 1000 || packet->data[0] != 0xa5 || packet->data[1] != 0x5a) continue;
+            if (len <= 0 || len >= 1000 || packet->data[0] != 0xa5 || packet->data[1] != 0x5a) {
+                RCLCPP_ERROR(this->get_logger(), "Bad packet. len = %d, magic bytes = 0x%hhx%hhx", len, packet->data[0],
+                    packet->data[1]);
+                continue;
+            }
             for (int i = 0; i < len; i++) {
                 packet_bytes[i] = packet->data[i];
             }
 
             // FIXME: whatever we're using doesnt use crc although I would love to.
-            if ((lidar_name == "N10" || lidar_name == "L10" || lidar_name == "N10_P")
-                && packet_bytes[len - 1] != N10_CalCRC8(packet_bytes, len - 1))
-                continue;
+            // see if the packet has a checksum and try and manually calculate the checksum?
+            //
+            // if ((lidar_name == "N10" || lidar_name == "L10" || lidar_name == "N10_P")
+            //     && packet_bytes[len - 1] != N10_CalCRC8(packet_bytes, len - 1))
+            //     continue;
             break;
         }
     } else {
