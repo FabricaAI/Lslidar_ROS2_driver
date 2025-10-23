@@ -45,6 +45,11 @@ class LSIOSR {
 public:
     static LSIOSR* instance(std::string name, int speed, int fd = 0);
 
+    // since this is a singleton, delete the copy, move, copy assign and move assign
+    LSIOSR(const LSIOSR&) = delete;
+    LSIOSR(LSIOSR&&) = delete;
+    LSIOSR& operator=(const LSIOSR&) = delete;
+    LSIOSR& operator=(LSIOSR&&) = delete;
     ~LSIOSR();
 
     /* 从串口中读取数据 */

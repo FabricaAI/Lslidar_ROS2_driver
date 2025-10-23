@@ -7,6 +7,7 @@
 @v1.0           21-2-4      yao          new
 *******************************************************/
 #include "lslidar_driver/lsiosr.h"
+#include <errno.h>
 
 namespace lslidar_driver {
 
@@ -107,7 +108,7 @@ void LSIOSR::flushinput() { tcflush(fd_, TCIFLUSH); }
 
 /* 从串口中读取数据 */
 int LSIOSR::read(unsigned char* buffer, int length, int timeout) {
-    memset(buffer, 0, length);
+    // memset(buffer, 0, length);
 
     int totalBytesRead = 0;
     int rc;
@@ -153,7 +154,7 @@ int LSIOSR::read(unsigned char* buffer, int length, int timeout) {
         if (rc > 0) {
             totalBytesRead += rc;
         } else if ((rc < 0) && (errno != EINTR) && (errno != EAGAIN)) {
-            printf("read error\n");
+            // printf("read error\n");
             return -1;
         }
     }
@@ -300,12 +301,12 @@ int LSIOSR::init() {
     int error_code = 0;
 
     fd_ = open(port_.c_str(), O_RDWR | O_NOCTTY | O_NDELAY);
-    if (0 < fd_) {
+    if (fd_ > 0) {
         error_code = 0;
         setOpt(DATA_BIT_8, PARITY_NONE, STOP_BIT_1); // 设置串口参数
         // printf("open_port %s  OK !\n", port_.c_str());
     } else {
-        error_code = -1;
+        error_code = errno;
     }
 
     return error_code;
