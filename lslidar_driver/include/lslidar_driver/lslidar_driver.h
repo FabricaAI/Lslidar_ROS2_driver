@@ -85,7 +85,7 @@ private:
     int getScan(std::vector<ScanPoint>& points, rclcpp::Time& scan_time, float& scan_duration);
     int SerialReadBytes(uint8_t buf[], size_t n, int timeout = 100);
     bool ReadAndCheckMagicBytes(uint8_t buf[]);
-    void zero_vector(std::vector<uint8_t>& vec, size_t size);
+    int GetCurrentRxQueueSize();
 
     boost::thread* pubscan_thread_;
     boost::shared_ptr<Input> msop_input_;

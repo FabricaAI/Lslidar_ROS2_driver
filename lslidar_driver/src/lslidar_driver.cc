@@ -429,8 +429,12 @@ void LslidarDriver::recvThread_crc(int& count, int& link_time) {
     else link_time = 0;
 
     if (link_time > 150) {
-        serial_->close();
-        int ret = serial_->init();
+        int ret = serial_->close();
+        if (ret < 0) {
+            RCLCPP_ERROR(
+                this->get_logger(), "Failed to close serial port - %s: %s", strerrorname_np(errno), strerror(errno));
+        }
+        ret = serial_->init();
         if (ret < 0) {
             RCLCPP_ERROR(this->get_logger(), "serial open fail");
             usleep(200000);
@@ -468,10 +472,24 @@ bool LslidarDriver::ReadAndCheckMagicBytes(uint8_t buf[]) {
     return true;
 }
 
+int LslidarDriver::GetCurrentRxQueueSize() {
+    int rx_queue_count = serial_->GetRxQueueCurrentSize();
+    if (rx_queue_count < 0) {
+        RCLCPP_ERROR(
+            this->get_logger(), "Failed to read kernel queue size - %s: %s", strerrorname_np(errno), strerror(errno));
+        return -1;
+    }
+    RCLCPP_DEBUG(this->get_logger(), "%d", rx_queue_count);
+    return rx_queue_count;
+}
+
 int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
     int len = 0;
     uint8_t magic_buf[2] { 0, 0 };
     uint8_t size_buf[2] { 0, 0 };
+
+    // Get the rx queue size BEFORE reading from it
+    int queue_size { GetCurrentRxQueueSize() };
 
     // read the first two start of frame bytes
     if (!ReadAndCheckMagicBytes(magic_buf)) {
@@ -489,9 +507,9 @@ int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
     // else if (lidar_name == "N10" || lidar_name == "L10") len = packet_bytes[2];
     // else {
     len = (size_buf[0] << 8) + size_buf[1];
-    // typical length is 158 to 160 bytes long
-    if (len > 160 || len < 158) {
-        RCLCPP_WARN(this->get_logger(), "Bad length read. len = %d. Skipping sample", len);
+    // typical length is 156 to 188 bytes long (compensation? or something)
+    if (len > 188 || len < 156) {
+        RCLCPP_WARN(this->get_logger(), "Bad value for packet length. len =  %d. Skipping sample", len);
         return 0;
     }
     // }
@@ -500,16 +518,30 @@ int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
         if (size_buf[0] == 0x55 && size_buf[1] == 0x00) len = 188;
     }
     RCLCPP_DEBUG(this->get_logger(), "len = %d", len);
+
     // memset 0 the vector
     dst.assign(len + 4, 0);
-    dst[0] = 0xa5;
-    dst[1] = 0x5a;
+    dst[0] = magic_buf[0];
+    dst[1] = magic_buf[1];
     dst[2] = size_buf[0];
     dst[3] = size_buf[1];
-    if (SerialReadBytes(&dst.data()[4], len) < len) {
+    if (SerialReadBytes(&(dst.data()[4]), len) < len) {
         // skip if we have some issues with reading
         RCLCPP_WARN(this->get_logger(), "Error while trying to read data size %d. Skipping packet.", len);
         return 0;
+    }
+
+    // Warn if kernel buffer is more than 75% full
+    // FIXME: sometimes when the buffer is full it may post all inf for intensity
+    // and maybe distance?
+    // It could be some internal state mismatch or something and it's publishing nonsense so the slam
+    // dies real bad
+    // We may need to reverse engineer the protocol to actually fix it as increasing the kernel buffer is
+    // not possible.
+    if (queue_size > 3072) {
+        RCLCPP_WARN(this->get_logger(),
+            "RX buffer at %d/4095 bytes (%.1f%%) before reading. Update rate may be slower.", queue_size,
+            (queue_size / 4095.f) * 100.);
     }
 
     // if (lidar_name == "N10" || lidar_name == "L10" || lidar_name == "N10_P") {

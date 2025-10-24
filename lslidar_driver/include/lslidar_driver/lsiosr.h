@@ -72,6 +72,9 @@ public:
     /* 设置串口号 */
     int setPortName(std::string name);
 
+    /* Get the number of bytes waiting in the read queue */
+    int GetRxQueueCurrentSize();
+
 private:
     LSIOSR(std::string name, int speed, int fd);
 
