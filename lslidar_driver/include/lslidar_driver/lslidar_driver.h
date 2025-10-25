@@ -70,19 +70,22 @@ public:
 
 private:
     uint64_t get_gps_stamp(struct tm t);
-    uint8_t N10_CalCRC8(unsigned char* p, int len);
+    uint8_t N10_CalCRC8(uint8_t* p, int len);
     bool loadParameters();
     bool createRosIO();
     void open_serial();
     void lidar_difop();
     void lidar_order(const std_msgs::msg::Int8::SharedPtr msg);
-    void data_processing(unsigned char* packet_bytes, int len);
+    void ProcessPacket(const std::vector<uint8_t>& packet);
     void data_processing_2(unsigned char* packet_bytes, int len);
-    void difop_processing(unsigned char* packet_bytes);
+    void difop_processing(const std::vector<uint8_t>& packet_bytes);
     void pubScanThread();
     void recvThread_crc(int& count, int& link_time);
-    int receive_data(unsigned char* packet_bytes);
+    int receive_data(std::vector<uint8_t>& dst);
     int getScan(std::vector<ScanPoint>& points, rclcpp::Time& scan_time, float& scan_duration);
+    int SerialReadBytes(uint8_t buf[], size_t n, int timeout = 100);
+    bool ReadAndCheckMagicBytes(uint8_t buf[]);
+    int GetCurrentRxQueueSize();
 
     boost::thread* pubscan_thread_;
     boost::shared_ptr<Input> msop_input_;
@@ -101,56 +104,57 @@ private:
     int idx_ = 0;
     int link_time_ = 0;
 
-    bool use_gps_ts;
-    bool is_start;
-    bool high_reflection;
-    bool compensation;
-    bool first_compensation = true;
-    bool pubScan;
-    bool pubPointCloud2;
+    bool use_gps_ts_;
+    bool is_start_;
+    bool high_reflection_;
+    bool compensation_;
+    bool first_compensation_ = true;
+    bool pubScan_;
+    bool pubPointCloud2_;
 
-    double min_range;
-    double max_range;
-    double angle_disable_min;
-    double angle_disable_max;
-    double angle_able_min;
-    double angle_able_max;
-    double last_degree = 0.0;
-    double degree_compensation = 0.0;
+    double min_range_;
+    double max_range_;
+    double angle_disable_min_;
+    double angle_disable_max_;
+    double angle_able_min_;
+    double angle_able_max_;
+    double last_degree_ = 0.0;
+    double degree_compensation_ = 0.0;
 
-    uint16_t PACKET_SIZE;
-    uint64_t sweep_end_time_gps;
-    uint64_t sweep_end_time_hardware;
-    uint64_t sub_second;
+    uint16_t packet_size_;
+    uint64_t sweep_end_time_gps_;
+    uint64_t sweep_end_time_hardware_;
+    uint64_t sub_second_;
 
-    std::string frame_id;
-    std::string interface_selection;
-    std::string scan_topic;
-    std::string lidar_name;
+    std::string frame_id_;
+    std::string interface_selection_;
+    std::string scan_topic_;
+    std::string lidar_name_;
     std::string serial_port_;
-    std::string dump_file;
-    std::string pointcloud_topic;
-    std::string in_file_name;
+    std::string dump_file_;
+    std::string pointcloud_topic_;
+    std::string in_file_name_;
 
-    tm pTime;
+    tm pTime_;
     rclcpp::Time pre_time_;
     rclcpp::Time time_;
     std::vector<ScanPoint> scan_points_;
     std::vector<ScanPoint> scan_points_bak_;
+    std::vector<uint8_t> serial_read_buf_;
     // Diagnostics updater
-    diagnostic_updater::Updater diagnostics;
-    std::shared_ptr<diagnostic_updater::TopicDiagnostic> diag_topic;
-    double diag_min_freq;
-    double diag_max_freq;
-    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_pub;
-    rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr difop_switch;
+    diagnostic_updater::Updater diagnostics_;
+    std::shared_ptr<diagnostic_updater::TopicDiagnostic> diag_topic_;
+    double diag_min_freq_;
+    double diag_max_freq_;
+    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_pub_;
+    rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr difop_switch_;
     LSIOSR* serial_;
 };
 typedef PointXYZIT VPoint;
 typedef pcl::PointCloud<VPoint> VPointCloud;
 
-} // namespace lslidar_driver
+}; // namespace lslidar_driver
 POINT_CLOUD_REGISTER_POINT_STRUCT(lslidar_driver::PointXYZIT,
     (float, x, x)(float, y, y)(float, z, z)(std::uint8_t, intensity, intensity)(double, timestamp, timestamp))
 #endif // _LSLIDAR_DRIVER_H_
