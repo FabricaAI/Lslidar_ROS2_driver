@@ -63,7 +63,7 @@ public:
     ~LslidarDriver();
 
     bool initialize();
-    bool polling();
+    void polling();
 
     typedef std::shared_ptr<LslidarDriver> LslidarDriverPtr;
     typedef std::shared_ptr<const LslidarDriver> LslidarDriverConstPtr;
@@ -77,15 +77,21 @@ private:
     void lidar_difop();
     void lidar_order(const std_msgs::msg::Int8::SharedPtr msg);
     void ProcessPacket(const std::vector<uint8_t>& packet);
-    void data_processing_2(unsigned char* packet_bytes, int len);
+    // void data_processing_2(unsigned char* packet_bytes, int len);
     void difop_processing(const std::vector<uint8_t>& packet_bytes);
     void pubScanThread();
     void recvThread_crc(int& count, int& link_time);
     int receive_data(std::vector<uint8_t>& dst);
-    int getScan(std::vector<ScanPoint>& points, rclcpp::Time& scan_time, float& scan_duration);
+    int GetScanToPublish(rclcpp::Time& scan_time, float& scan_duration);
     int SerialReadBytes(uint8_t buf[], size_t n, int timeout = 100);
-    bool ReadAndCheckMagicBytes(uint8_t buf[]);
+
+    /*
+     * @brief Seek to 0xA55A in the stream
+     * @return if the magic bytes were found
+     */
+    bool SeekToMagicBytes(uint8_t buf[]);
     int GetCurrentRxQueueSize();
+    void ClearInternalState();
 
     boost::thread* pubscan_thread_;
     boost::shared_ptr<Input> msop_input_;
@@ -93,16 +99,18 @@ private:
     boost::mutex pubscan_mutex_;
     boost::condition_variable pubscan_cond_;
     int UDP_PORT_NUMBER;
-    int count_num_;
+    size_t pub_sample_count_shared_;
     int package_points_;
     int data_bits_start_;
     int degree_bits_start_;
     int end_degree_bits_start_;
     int rpm_bits_start_;
     int baud_rate_;
-    int points_size_;
+    int max_points_count_;
     int idx_ = 0;
     int link_time_ = 0;
+    const int max_packet_len_ = 188;
+    const int min_packet_len_ = 156;
 
     bool use_gps_ts_;
     bool is_start_;
@@ -120,6 +128,7 @@ private:
     double angle_able_max_;
     double last_degree_ = 0.0;
     double degree_compensation_ = 0.0;
+    double last_start_angle_;
 
     uint16_t packet_size_;
     uint64_t sweep_end_time_gps_;
@@ -139,7 +148,8 @@ private:
     rclcpp::Time pre_time_;
     rclcpp::Time time_;
     std::vector<ScanPoint> scan_points_;
-    std::vector<ScanPoint> scan_points_bak_;
+    std::vector<ScanPoint> scan_points_shared_;
+    std::vector<ScanPoint> scan_points_to_pub_;
     std::vector<uint8_t> serial_read_buf_;
     // Diagnostics updater
     diagnostic_updater::Updater diagnostics_;
@@ -149,6 +159,7 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr point_cloud_pub_;
     rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr difop_switch_;
+    rclcpp::TimerBase::SharedPtr read_serial_timer_;
     LSIOSR* serial_;
 };
 typedef PointXYZIT VPoint;

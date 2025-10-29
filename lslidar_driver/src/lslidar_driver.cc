@@ -42,15 +42,10 @@ int scan_crop_max[] = { 90, 270 }; // 修改后编译即可
 
 namespace lslidar_driver {
 
-static void my_hander(int sig) {
-    printf("sig: %d", sig);
-    abort();
-}
 LslidarDriver::LslidarDriver() : LslidarDriver(rclcpp::NodeOptions()) { }
 LslidarDriver::LslidarDriver(const rclcpp::NodeOptions& options)
     : Node("lslidar_driver_node", options)
     , diagnostics_(this) {
-    signal(SIGINT, my_hander);
 
     if (!this->initialize()) RCLCPP_ERROR(this->get_logger(), "Could not initialize the driver...");
     else RCLCPP_INFO(this->get_logger(), "Successfully initialize driver...");
@@ -130,9 +125,8 @@ bool LslidarDriver::loadParameters() {
             angle_able_max_ = angle_disable_min_;
         }
     }
-    count_num_ = 0;
+    pub_sample_count_shared_ = 0;
 
-    scan_points_.resize(6000);
     /*
     if (lidar_name == "M10") {
         use_gps_ts = false;
@@ -206,7 +200,12 @@ bool LslidarDriver::loadParameters() {
     degree_bits_start_ = 4;
     rpm_bits_start_ = 6;
     baud_rate_ = 500000;
-    points_size_ = 2000;
+    max_points_count_ = 2000;
+    // TODO: rework this so that we only publish the actual data and we should shrink to fit
+    // scan is 30 degrees per sample so 12 points per scan, reserve double that.
+    scan_points_.reserve(package_points_ * 24);
+    scan_points_shared_.reserve(package_points_ * 24);
+    scan_points_to_pub_.reserve(package_points_ * 24);
     // }
     RCLCPP_INFO_STREAM(this->get_logger(), "Lidar is " << lidar_name_.c_str());
 
@@ -215,6 +214,8 @@ bool LslidarDriver::loadParameters() {
         point_cloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(pointcloud_topic_, 10);
     difop_switch_ = this->create_subscription<std_msgs::msg::Int8>(
         "lslidar_order", 1, std::bind(&LslidarDriver::lidar_order, this, std::placeholders::_1)); // 转速输入
+    read_serial_timer_
+        = this->create_wall_timer(std::chrono::milliseconds(3), std::bind(&LslidarDriver::polling, this));
     return true;
 }
 
@@ -382,9 +383,11 @@ bool LslidarDriver::createRosIO() {
     return true;
 }
 
-int LslidarDriver::getScan(std::vector<ScanPoint>& points, rclcpp::Time& scan_time, float& scan_duration) {
-    boost::unique_lock<boost::mutex> lock(mutex_);
-    points.assign(scan_points_bak_.begin(), scan_points_bak_.end());
+int LslidarDriver::GetScanToPublish(rclcpp::Time& scan_time, float& scan_duration) {
+    {
+        boost::unique_lock<boost::mutex> lock(mutex_);
+        std::swap(scan_points_to_pub_, scan_points_shared_);
+    }
     scan_time = pre_time_;
     scan_duration = time_.seconds() - pre_time_.seconds();
     return 1;
@@ -463,13 +466,23 @@ int LslidarDriver::SerialReadBytes(uint8_t buf[], size_t n, int timeout) {
     return total_count;
 }
 
-bool LslidarDriver::ReadAndCheckMagicBytes(uint8_t buf[]) {
-    if (SerialReadBytes(buf, 1) < 0) return false;
-    if (buf[0] != 0xA5) return false;
+bool LslidarDriver::SeekToMagicBytes(uint8_t buf[]) {
+    bool found { false };
+    while (!found) {
+        while (buf[0] != 0xA5) {
+            if (SerialReadBytes(buf, 1) <= 0) return false;
+        }
+        if (SerialReadBytes(&buf[1], 1) <= 0) return false;
+        if (buf[1] == 0x5A) {
+            found = true;
+        } else {
+            // lone stray 0xA5 probably from data, not a start of packet
+            // reread the bytes.
+            buf[0] = 0;
+        }
+    }
 
-    if (SerialReadBytes(&buf[1], 1) < 0) return false;
-    if (buf[1] != 0x5A) return false;
-    return true;
+    return found;
 }
 
 int LslidarDriver::GetCurrentRxQueueSize() {
@@ -479,20 +492,59 @@ int LslidarDriver::GetCurrentRxQueueSize() {
             this->get_logger(), "Failed to read kernel queue size - %s: %s", strerrorname_np(errno), strerror(errno));
         return -1;
     }
-    RCLCPP_DEBUG(this->get_logger(), "%d", rx_queue_count);
+    RCLCPP_DEBUG(this->get_logger(), "bytes in kernel queue: %d", rx_queue_count);
     return rx_queue_count;
 }
 
+void LslidarDriver::ClearInternalState() {
+    if (serial_->flushinput() < 0) {
+        RCLCPP_ERROR(
+            this->get_logger(), "Failed to flush kernel queue - %s: %s", strerrorname_np(errno), strerror(errno));
+    }
+    scan_points_.assign(max_points_count_, { 0, 0, 0 });
+    // scan_points_shared_.assign(max_points_count_, { 0, 0, 0 });
+    // scan_points_to_pub_.assign(max_points_count_, { 0, 0, 0 });
+    idx_ = 0;
+    last_degree_ = 0;
+    degree_compensation_ = 0;
+}
+
 int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
+    // Get the rx queue size BEFORE reading from it
+    int queue_size { GetCurrentRxQueueSize() };
+    if (queue_size < max_packet_len_) {
+        // not guaranteed to get a full packet. Try again later.
+        // RCLCPP_WARN(this->get_logger(), "Not enough bytes to form a packet (%d), retrying next iteration",
+        // queue_size);
+        return 0;
+    }
+
+    // FIXME: sometimes when the buffer is full it may post all inf for intensity
+    // and maybe distance?
+    // It could be some internal state mismatch or something and it's publishing nonsense so the slam
+    // dies real bad
+    // We may need to reverse engineer the protocol to actually fix it as increasing the kernel buffer is
+    // not possible.
+    //
+    // Try:
+    // flush queue
+    // flush scan_points_ and scan_points_bak_
+    // idx_ = 0
+    // degree_compensation_ = 0
+    // queue length is technically 4096 but kernel will drop all bytes that are not a line break
+    // give 1 packet length of buffer here
+    else if (queue_size >= (3907)) {
+        RCLCPP_WARN(this->get_logger(), "Kernel buffer full. Clearing internal state as a precaution.");
+        ClearInternalState();
+        return 0;
+    }
+
     int len = 0;
     uint8_t magic_buf[2] { 0, 0 };
     uint8_t size_buf[2] { 0, 0 };
 
-    // Get the rx queue size BEFORE reading from it
-    int queue_size { GetCurrentRxQueueSize() };
-
     // read the first two start of frame bytes
-    if (!ReadAndCheckMagicBytes(magic_buf)) {
+    if (!SeekToMagicBytes(magic_buf)) {
         return 0;
     }
 
@@ -508,7 +560,7 @@ int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
     // else {
     len = (size_buf[0] << 8) + size_buf[1];
     // typical length is 156 to 188 bytes long (compensation? or something)
-    if (len > 188 || len < 156) {
+    if (len > max_packet_len_ || len < min_packet_len_) {
         RCLCPP_WARN(this->get_logger(), "Bad value for packet length. len =  %d. Skipping sample", len);
         return 0;
     }
@@ -529,19 +581,6 @@ int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
         // skip if we have some issues with reading
         RCLCPP_WARN(this->get_logger(), "Error while trying to read data size %d. Skipping packet.", len);
         return 0;
-    }
-
-    // Warn if kernel buffer is more than 75% full
-    // FIXME: sometimes when the buffer is full it may post all inf for intensity
-    // and maybe distance?
-    // It could be some internal state mismatch or something and it's publishing nonsense so the slam
-    // dies real bad
-    // We may need to reverse engineer the protocol to actually fix it as increasing the kernel buffer is
-    // not possible.
-    if (queue_size > 3072) {
-        RCLCPP_WARN(this->get_logger(),
-            "RX buffer at %d/4095 bytes (%.1f%%) before reading. Update rate may be slower.", queue_size,
-            (queue_size / 4095.f) * 100.);
     }
 
     // if (lidar_name == "N10" || lidar_name == "L10" || lidar_name == "N10_P") {
@@ -576,22 +615,30 @@ void LslidarDriver::difop_processing(const std::vector<uint8_t>& packet_bytes) /
 
 void LslidarDriver::ProcessPacket(const std::vector<uint8_t>& buf) // 处理每一包的数据
 {
-    // RCLCPP_INFO(this->get_logger(), "process packet");
+    // packet is in some form
+    // - start heading
+    // - samples
+    // - we should be able to get some sort of reading what is the deg interval
+    //
     if (buf.size() == 0) {
         return;
     }
-    double degree;
+    double start_angle;
     // double end_degree;
-    double degree_interval = 15.0;
     boost::posix_time::ptime t1, t2;
     t1 = boost::posix_time::microsec_clock::universal_time();
 
     int s = buf[degree_bits_start_];
     int z = buf[degree_bits_start_ + 1];
+    start_angle = (s * 256 + z) / 100.f + degree_compensation_;
+    start_angle = (start_angle < 0) ? start_angle + 360 : start_angle;
+    start_angle = (start_angle > 360) ? start_angle - 360 : start_angle;
 
-    degree = (s * 256 + z) / 100.f + degree_compensation_;
-    degree = (degree < 0) ? degree + 360 : degree;
-    degree = (degree > 360) ? degree - 360 : degree;
+    double packet_angle_interval = start_angle - last_start_angle_;
+    if (packet_angle_interval < 0) {
+        packet_angle_interval += 360.f;
+    }
+    RCLCPP_INFO(this->get_logger(), "start_angle: %f", start_angle);
 
     // not relevant
     /*
@@ -607,13 +654,12 @@ void LslidarDriver::ProcessPacket(const std::vector<uint8_t>& buf) // 处理每�
     }
     */
 
-    // boost::unique_lock<boost::mutex> lock(mutex_);
     if (lidar_name_ == "M10_PLUS" || lidar_name_ == "M10_P") {
         packet_size_ = buf.size();
         package_points_ = (packet_size_ - 20) / 2;
     }
     int invalidValue = 0;
-    int point_len = 2;
+    constexpr int point_len = 2;
     // if (lidar_name == "N10" || lidar_name == "L10") point_len = 3;
 
     /*
@@ -653,15 +699,23 @@ void LslidarDriver::ProcessPacket(const std::vector<uint8_t>& buf) // 处理每�
         RCLCPP_WARN(this->get_logger(), "Number of valid samples <= 1");
         return;
     }
+    RCLCPP_INFO(this->get_logger(), "Last degree: %f", last_degree_);
 
-    for (int num = 0; num < package_points_; num++) {
-        int s = buf[num * point_len + data_bits_start_];
-        int z = buf[num * point_len + data_bits_start_ + 1];
+    const double sample_angle_increment { packet_angle_interval / valid_points_count };
+
+    // package_points_ is number of samples
+    for (int i = 0; i < package_points_; i++) {
+        // 1 datapoint is 2 bytes
+        uint8_t msb = buf[i * point_len + data_bits_start_];
+        uint8_t lsb = buf[i * point_len + data_bits_start_ + 1];
         // if (lidar_name == "N10" || lidar_name == "L10") y = buf[num * point_len + data_bits_start + 2];
-        int dist_temp = s & 0x7F;
-        int inten_temp = s & 0x80;
+        int dist_temp = msb & 0x7F;
+        int inten_temp = msb & 0x80;
+        double sample_range { 0.f };
+        double sample_intensity { 0.f };
+        double sample_angle { 0.f };
 
-        if ((s * 256 + z) != 0xFFFF) {
+        if ((msb * 256 + lsb) != 0xFFFF) {
             /*
             if (lidar_name == "N10" || lidar_name == "L10") {
                 scan_points_[idx].range = double(s * 256 + (z)) / 1000.f;
@@ -669,44 +723,55 @@ void LslidarDriver::ProcessPacket(const std::vector<uint8_t>& buf) // 处理每�
             } else
             */
 
-            if ((lidar_name_ == "M10_P" || lidar_name_ == "M10_PLUS") && !high_reflection_) {
-                scan_points_[idx_].range = double(s * 256 + (z)) / 1000.f;
+            // if ((lidar_name_ == "M10_P" || lidar_name_ == "M10_PLUS") && !high_reflection_) {
+            if (!high_reflection_) {
+                scan_points_[idx_].range = double(msb * 256 + (lsb)) / 1000.f;
                 scan_points_[idx_].intensity = 0;
             } else {
-                scan_points_[idx_].range = double(dist_temp * 256 + (z)) / 1000.f;
+                scan_points_[idx_].range = double(dist_temp * 256 + (lsb)) / 1000.f;
                 if (inten_temp) scan_points_[idx_].intensity = 255;
                 else scan_points_[idx_].intensity = 0;
             }
-            if ((degree + (degree_interval / valid_points_count * num)) > 360)
-                scan_points_[idx_].degree = degree + (degree_interval / valid_points_count * num) - 360;
-            else scan_points_[idx_].degree = degree + (degree_interval / valid_points_count * num);
+
+            double sample_angle { start_angle + (sample_angle_increment * i) };
+            if (sample_angle > 360.0) scan_points_[idx_].degree = sample_angle - 360;
+            else scan_points_[idx_].degree = sample_angle;
         } else continue;
 
-        if ((scan_points_[idx_].degree < last_degree_ && scan_points_[idx_].degree < 5 && last_degree_ > 355)
-            || idx_ >= points_size_) {
+        // publish when one revolution has been achieved
+        if ((scan_points_[idx_].degree < last_degree_ && scan_points_[idx_].degree < 15 && last_degree_ > 345)
+            || idx_ >= max_points_count_ - 1) {
+
+            // if () {
             last_degree_ = scan_points_[idx_].degree;
-            count_num_ = idx_;
-            idx_ = 0;
-            for (long unsigned int k = 0; k < scan_points_.size(); k++) {
+            RCLCPP_INFO(this->get_logger(), "publishing. idx_ = %d", idx_);
+
+            // save this in a local variable bc race conditions
+            size_t pub_sample_count = idx_ + 1;
+            for (size_t k = 0; k < pub_sample_count; k++) {
                 if (scan_points_[k].range < min_range_ || scan_points_[k].range > max_range_) scan_points_[k].range = 0;
             }
-            boost::unique_lock<boost::mutex> lock(mutex_);
-            scan_points_bak_.resize(scan_points_.size());
-            scan_points_bak_.assign(scan_points_.begin(), scan_points_.end());
-            for (long unsigned int k = 0; k < scan_points_.size(); k++) {
-                scan_points_[k].range = 0;
-                scan_points_[k].degree = 0;
-                scan_points_[k].intensity = 0;
+
+            {
+                boost::unique_lock<boost::mutex> lock(mutex_);
+                scan_points_shared_.resize(max_points_count_);
+                // just swap the size, cap and data ptr here
+                std::swap(scan_points_, scan_points_shared_);
+                pub_sample_count_shared_ = pub_sample_count;
             }
-            pre_time_ = time_;
-            lock.unlock();
+            // guaranteed that pub_sample_count_shared_ is reassigned.
+            // publish the message
             pubscan_cond_.notify_one();
+            idx_ = 0;
+            scan_points_.assign(max_points_count_, { 0, 0, 0 });
+            pre_time_ = time_;
             time_ = get_clock()->now();
         } else {
             last_degree_ = scan_points_[idx_].degree;
             idx_++;
         }
     }
+    last_start_angle_ = start_angle;
     // this makes absolutely 0 sense whatsoever
     // packet_bytes = { 0x00 };
     // if (packet_bytes) {
@@ -990,14 +1055,25 @@ void LslidarDriver::pubScanThread() {
             }
         } else {
             */
+        size_t pub_sample_count { 0 };
+        {
+            boost::unique_lock<boost::mutex> lock(mutex_);
+            pub_sample_count = pub_sample_count_shared_;
+        }
+        if (pub_sample_count == 0) {
+            RCLCPP_ERROR(this->get_logger(), "pub sample count is 0");
+        }
         if (pubScan_) {
             auto scan = sensor_msgs::msg::LaserScan::UniquePtr(new sensor_msgs::msg::LaserScan());
-            int scan_num = ceil((angle_able_max_ - angle_able_min_) / 360 * count_num_) + 1;
+            int scan_num = ceil((angle_able_max_ - angle_able_min_) / 360 * pub_sample_count) + 1;
 
-            std::vector<ScanPoint> points;
             rclcpp::Time start_time;
             float scan_time;
-            this->getScan(points, start_time, scan_time);
+            GetScanToPublish(start_time, scan_time);
+            if (scan_points_to_pub_.size() == 0) {
+                RCLCPP_WARN(this->get_logger(), "No scan to get.");
+                return;
+            }
             scan->header.frame_id = frame_id_;
             if (use_gps_ts_) {
                 scan->header.stamp = rclcpp::Time(sweep_end_time_gps_, sweep_end_time_hardware_);
@@ -1012,7 +1088,7 @@ void LslidarDriver::pubScanThread() {
                 scan->angle_min = 2 * M_PI * angle_able_min_ / 360;
                 scan->angle_max = 2 * M_PI * angle_able_max_ / 360;
             }
-            scan->angle_increment = 2 * M_PI / (double)(count_num_ - 1);
+            scan->angle_increment = 2 * M_PI / (double)(pub_sample_count - 1);
 
             scan->range_min = min_range_;
             scan->range_max = max_range_;
@@ -1021,34 +1097,36 @@ void LslidarDriver::pubScanThread() {
             scan->intensities.reserve(scan_num);
             scan->intensities.assign(scan_num, std::numeric_limits<float>::infinity());
             scan->scan_time = scan_time;
-            scan->time_increment = scan_time / (double)(count_num_ - 1);
+            scan->time_increment = scan_time / (double)(pub_sample_count - 1);
 
-            int start_num = floor(angle_able_min_ * count_num_ / 360);
-            int end_num = floor(angle_able_max_ * count_num_ / 360);
+            int start_num = floor(angle_able_min_ * pub_sample_count / 360);
+            int end_num = floor(angle_able_max_ * pub_sample_count / 360);
 
-            for (int i = 0; i < count_num_; i++) {
-                int point_idx = round((360 - points[i].degree) * count_num_ / 360);
-                if (point_idx < (end_num - count_num_)) point_idx += count_num_;
+            for (size_t i = 0; i < pub_sample_count; i++) {
+                int point_idx = round((360 - scan_points_to_pub_[i].degree) * pub_sample_count / 360);
+                if (point_idx < static_cast<int>(end_num - pub_sample_count)) point_idx += pub_sample_count;
                 point_idx = point_idx - start_num;
-                if (point_idx < 0 || point_idx >= scan_num) continue;
-                if (points[i].range == 0.0) {
+                if (point_idx < 0 || point_idx > scan_num) continue;
+                if (scan_points_to_pub_[i].range == 0.0) {
                     scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
                 } else {
-                    double dist = points[i].range;
+                    double dist = scan_points_to_pub_[i].range;
                     scan->ranges[point_idx] = (float)dist;
                 }
-                scan->intensities[point_idx] = points[i].intensity;
+                scan->intensities[point_idx] = scan_points_to_pub_[i].intensity;
 
                 if (truncated_mode_) {
                     int len = sizeof(scan_crop_max) / sizeof(scan_crop_max[0]);
                     for (int j = 0; j < len; ++j) {
-                        if ((point_idx >= (scan_crop_min[j] * count_num_ / 360))
-                            && (point_idx <= (scan_crop_max[j] * count_num_ / 360))) {
+                        if ((point_idx >= static_cast<int>(scan_crop_min[j] * pub_sample_count / 360))
+                            && (point_idx <= static_cast<int>(scan_crop_max[j] * pub_sample_count / 360))) {
                             scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
                             scan->intensities[point_idx] = 0;
                         }
                     }
                 }
+                // RCLCPP_INFO(this->get_logger(), "%d: range: %f, intensity: %f", point_idx, scan->ranges[point_idx],
+                //     scan->intensities[point_idx]);
             }
 
             scan_pub_->publish(std::move(scan));
@@ -1058,7 +1136,7 @@ void LslidarDriver::pubScanThread() {
             std::vector<ScanPoint> points;
             rclcpp::Time start_time;
             float scan_time;
-            this->getScan(points, start_time, scan_time);
+            GetScanToPublish(start_time, scan_time);
             VPointCloud::Ptr point_cloud(new VPointCloud());
             if (use_gps_ts_) {
                 start_time = rclcpp::Time(sweep_end_time_gps_, sweep_end_time_hardware_);
@@ -1067,7 +1145,7 @@ void LslidarDriver::pubScanThread() {
             point_cloud->header.stamp = static_cast<uint64_t>(timestamp * 1e6);
             point_cloud->header.frame_id = frame_id_;
             point_cloud->height = 1;
-            for (uint16_t i = 0; i < count_num_; i++) {
+            for (uint16_t i = 0; i < pub_sample_count; i++) {
                 double degree = 360.0 - points[i].degree;
                 bool pass_point = false;
                 if (angle_able_max_ < 360) {
@@ -1080,8 +1158,8 @@ void LslidarDriver::pubScanThread() {
                     // printf("degree = %f\n",degree);
                     // printf("angle_able_min = %f\nangle_able_max=%f\n",angle_able_min,angle_able_max);
                     VPoint point;
-                    int point_idx = round(degree * count_num_ / 360);
-                    point.timestamp = timestamp - point_idx * (scan_time / count_num_);
+                    int point_idx = round(degree * pub_sample_count / 360);
+                    point.timestamp = timestamp - point_idx * (scan_time / pub_sample_count);
                     // printf("timestamp = %f\n",point.timestamp);
                     point.x = points[i].range * cos(M_PI / 180 * points[i].degree);
                     point.y = -points[i].range * sin(M_PI / 180 * points[i].degree);
@@ -1095,7 +1173,7 @@ void LslidarDriver::pubScanThread() {
             pcl::toROSMsg(*point_cloud, pc_msg);
             point_cloud_pub_->publish(pc_msg);
         }
-        count_num_ = 0;
+        // pub_sample_count_shared_ = 0;
         wait_for_wake = true;
         if (compensation_) {
             lidar_difop();
@@ -1103,8 +1181,8 @@ void LslidarDriver::pubScanThread() {
     }
 }
 
-bool LslidarDriver::polling() {
-    if (!is_start_) return true;
+void LslidarDriver::polling() {
+    if (!is_start_) return;
 
     // It will be the processor's responsibility to resize the vector to fit the packet
     int len = 0;
@@ -1195,20 +1273,17 @@ bool LslidarDriver::polling() {
                     usleep(usleep_time);
                 }
             }
-            return false;
+            return;
         } else {
-            while (len == 0) {
-                difop = false;
-                len = LslidarDriver::receive_data(serial_read_buf_);
-                if ((lidar_name_ == "M10" || lidar_name_ == "M10_DOUBLE" || lidar_name_ == "M10_GPS"
-                        || lidar_name_ == "M10_P" || lidar_name_ == "M10_PLUS")
-                    && compensation_) {
-                    if (serial_read_buf_[2] == 0x55 && serial_read_buf_[3] == 0x00 && serial_read_buf_[186] == 0xFA
-                        && serial_read_buf_[187] == 0xFB)
-                        difop = true;
-                }
-                if (len == 0) continue;
-                break;
+            difop = false;
+            len = LslidarDriver::receive_data(serial_read_buf_);
+            if (len == 0) return;
+            if ((lidar_name_ == "M10" || lidar_name_ == "M10_DOUBLE" || lidar_name_ == "M10_GPS"
+                    || lidar_name_ == "M10_P" || lidar_name_ == "M10_PLUS")
+                && compensation_) {
+                if (serial_read_buf_[2] == 0x55 && serial_read_buf_[3] == 0x00 && serial_read_buf_[186] == 0xFA
+                    && serial_read_buf_[187] == 0xFB)
+                    difop = true;
             }
         }
     }
@@ -1218,7 +1293,6 @@ bool LslidarDriver::polling() {
         // else
         LslidarDriver::ProcessPacket(serial_read_buf_);
     }
-    return true;
 }
 
 } // namespace lslidar_driver

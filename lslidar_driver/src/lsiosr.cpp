@@ -102,7 +102,7 @@ int LSIOSR::setOpt(int nBits, uint8_t nEvent, int nStop) {
     return 0;
 }
 
-void LSIOSR::flushinput() { tcflush(fd_, TCIFLUSH); }
+int LSIOSR::flushinput() { return tcflush(fd_, TCIFLUSH); }
 
 /* Read bytes from serial device */
 int LSIOSR::read(unsigned char* buffer, int length, int timeout) {
