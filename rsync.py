@@ -73,7 +73,7 @@ class Rsync:
             container_json = json.loads(container)
             container_name = container_json.get("Names", "")
             image_name = container_json.get("Image", "")
-            if container_name == self.container_name and "lidar-test" in image_name:
+            if container_name == self.container_name:
                 found = True
                 break
 
@@ -85,8 +85,8 @@ class Rsync:
             [
                 "ssh",
                 f"ubuntu@{self.robot_ip}",
-                f"docker cp {self.target_path}/Lslidar_ROS2_driver/lslidar_driver "
-                f"{self.container_name}:/home/ubuntu/Lslidar_ROS2_driver/",
+                f"docker cp {self.target_path}/Lslidar_ROS2_driver "
+                f"{self.container_name}:/home/ubuntu/",
             ],
         )
         print(f"{self.container_name} DOCKER CP ... OK")

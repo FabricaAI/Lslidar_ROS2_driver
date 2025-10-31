@@ -10,7 +10,11 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
-add_compile_options(-Og -g -fpermissive)
+# fpermissive so that we can pass const char* to read()
+add_compile_options(-O2 -fpermissive)
+
+# if we need to debug
+# add_compile_options(-g)
 
 set(libpcap_LIBRARIES -lpcap)
 

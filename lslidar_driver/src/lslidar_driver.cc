@@ -335,7 +335,7 @@ void LslidarDriver::lidar_order(const std_msgs::msg::Int8::SharedPtr msg) {
 
 void LslidarDriver::open_serial() {
     diagnostics_.setHardwareID("Lslidar");
-    this->declare_parameter<std::string>("serial_port_", "/dev/ttyACM1");
+    this->declare_parameter<std::string>("serial_port_", "/dev/ttyACM2");
     this->get_parameter("serial_port_", serial_port_);
     serial_ = LSIOSR::instance(serial_port_, baud_rate_);
     int errcode = serial_->init();
@@ -470,6 +470,7 @@ bool LslidarDriver::SeekToMagicBytes(uint8_t buf[]) {
     bool found { false };
     while (!found) {
         while (buf[0] != 0xA5) {
+            // RCLCPP_INFO(this->get_logger(), "buf[0] = %c", buf[0]);
             if (SerialReadBytes(buf, 1) <= 0) return false;
         }
         if (SerialReadBytes(&buf[1], 1) <= 0) return false;
@@ -479,6 +480,7 @@ bool LslidarDriver::SeekToMagicBytes(uint8_t buf[]) {
             // lone stray 0xA5 probably from data, not a start of packet
             // reread the bytes.
             buf[0] = 0;
+            RCLCPP_INFO(this->get_logger(), "second magic byte error");
         }
     }
 
@@ -505,8 +507,8 @@ void LslidarDriver::ClearInternalState() {
     // scan_points_shared_.assign(max_points_count_, { 0, 0, 0 });
     // scan_points_to_pub_.assign(max_points_count_, { 0, 0, 0 });
     idx_ = 0;
-    last_degree_ = 0;
     degree_compensation_ = 0;
+    angle_covered_by_scan_points_ = 0.f;
 }
 
 int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
@@ -572,12 +574,12 @@ int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
     RCLCPP_DEBUG(this->get_logger(), "len = %d", len);
 
     // memset 0 the vector
-    dst.assign(len + 4, 0);
+    dst.assign(len, 0);
     dst[0] = magic_buf[0];
     dst[1] = magic_buf[1];
     dst[2] = size_buf[0];
     dst[3] = size_buf[1];
-    if (SerialReadBytes(&(dst.data()[4]), len) < len) {
+    if (SerialReadBytes(&(dst.data()[4]), len - 4) < len - 4) {
         // skip if we have some issues with reading
         RCLCPP_WARN(this->get_logger(), "Error while trying to read data size %d. Skipping packet.", len);
         return 0;
@@ -634,11 +636,7 @@ void LslidarDriver::ProcessPacket(const std::vector<uint8_t>& buf) // 处理每�
     start_angle = (start_angle < 0) ? start_angle + 360 : start_angle;
     start_angle = (start_angle > 360) ? start_angle - 360 : start_angle;
 
-    double packet_angle_interval = start_angle - last_start_angle_;
-    if (packet_angle_interval < 0) {
-        packet_angle_interval += 360.f;
-    }
-    RCLCPP_INFO(this->get_logger(), "start_angle: %f", start_angle);
+    constexpr double packet_angle_interval { 15.f };
 
     // not relevant
     /*
@@ -699,9 +697,8 @@ void LslidarDriver::ProcessPacket(const std::vector<uint8_t>& buf) // 处理每�
         RCLCPP_WARN(this->get_logger(), "Number of valid samples <= 1");
         return;
     }
-    RCLCPP_INFO(this->get_logger(), "Last degree: %f", last_degree_);
-
-    const double sample_angle_increment { packet_angle_interval / valid_points_count };
+    // scan_points_.resize(package_points_);
+    const double sample_angle_increment { packet_angle_interval / package_points_ };
 
     // package_points_ is number of samples
     for (int i = 0; i < package_points_; i++) {
@@ -711,10 +708,45 @@ void LslidarDriver::ProcessPacket(const std::vector<uint8_t>& buf) // 处理每�
         // if (lidar_name == "N10" || lidar_name == "L10") y = buf[num * point_len + data_bits_start + 2];
         int dist_temp = msb & 0x7F;
         int inten_temp = msb & 0x80;
-        double sample_range { 0.f };
-        double sample_intensity { 0.f };
-        double sample_angle { 0.f };
 
+        const double angle_raw { start_angle + (sample_angle_increment * i) };
+        const double sample_angle { angle_raw > 360.f ? angle_raw - 360.f : angle_raw };
+
+        // publish existing scan points when we have one revolution's worth of packets
+        // if ((scan_points_[idx_].degree < last_degree_ && scan_points_[idx_].degree < 15 && last_degree_ > 345)
+        //     || idx_ >= max_points_count_ - 1) {
+        if (angle_covered_by_scan_points_ + sample_angle_increment >= (angle_able_max_ - angle_able_min_)) {
+
+            // RCLCPP_INFO(this->get_logger(), "publishing. idx_ = %d", idx_);
+
+            // save this in a local variable bc race conditions
+            const size_t pub_sample_count = idx_;
+            scan_points_.resize(pub_sample_count);
+            for (size_t k = 0; k < pub_sample_count; k++) {
+                if (scan_points_[k].range < min_range_ || scan_points_[k].range > max_range_) {
+                    // RCLCPP_WARN(this->get_logger(), "scan_points_[%ld].range = %f", k, scan_points_[k].range);
+                    scan_points_[k].range = 0;
+                }
+            }
+
+            {
+                boost::unique_lock<boost::mutex> lock(mutex_);
+                scan_points_shared_.resize(pub_sample_count);
+                // just swap the size, cap and data ptr here
+                std::swap(scan_points_, scan_points_shared_);
+                pub_sample_count_shared_ = pub_sample_count;
+            }
+            // guaranteed that pub_sample_count_shared_ is reassigned.
+            // publish the message
+            pubscan_cond_.notify_one();
+            idx_ = 0;
+            scan_points_.assign(max_points_count_, { 0.f, 0.f, 0.f });
+            pre_time_ = time_;
+            time_ = get_clock()->now();
+            angle_covered_by_scan_points_ = 0.f;
+        }
+
+        // add the current sample to the scan points
         if ((msb * 256 + lsb) != 0xFFFF) {
             /*
             if (lidar_name == "N10" || lidar_name == "L10") {
@@ -733,45 +765,16 @@ void LslidarDriver::ProcessPacket(const std::vector<uint8_t>& buf) // 处理每�
                 else scan_points_[idx_].intensity = 0;
             }
 
-            double sample_angle { start_angle + (sample_angle_increment * i) };
-            if (sample_angle > 360.0) scan_points_[idx_].degree = sample_angle - 360;
-            else scan_points_[idx_].degree = sample_angle;
-        } else continue;
-
-        // publish when one revolution has been achieved
-        if ((scan_points_[idx_].degree < last_degree_ && scan_points_[idx_].degree < 15 && last_degree_ > 345)
-            || idx_ >= max_points_count_ - 1) {
-
-            // if () {
-            last_degree_ = scan_points_[idx_].degree;
-            RCLCPP_INFO(this->get_logger(), "publishing. idx_ = %d", idx_);
-
-            // save this in a local variable bc race conditions
-            size_t pub_sample_count = idx_ + 1;
-            for (size_t k = 0; k < pub_sample_count; k++) {
-                if (scan_points_[k].range < min_range_ || scan_points_[k].range > max_range_) scan_points_[k].range = 0;
-            }
-
-            {
-                boost::unique_lock<boost::mutex> lock(mutex_);
-                scan_points_shared_.resize(max_points_count_);
-                // just swap the size, cap and data ptr here
-                std::swap(scan_points_, scan_points_shared_);
-                pub_sample_count_shared_ = pub_sample_count;
-            }
-            // guaranteed that pub_sample_count_shared_ is reassigned.
-            // publish the message
-            pubscan_cond_.notify_one();
-            idx_ = 0;
-            scan_points_.assign(max_points_count_, { 0, 0, 0 });
-            pre_time_ = time_;
-            time_ = get_clock()->now();
+            // if (sample_angle > 360.0) scan_points_[idx_].degree = sample_angle - 360;
+            // else scan_points_[idx_].degree = sample_angle;
+            scan_points_[idx_].degree = sample_angle;
         } else {
-            last_degree_ = scan_points_[idx_].degree;
-            idx_++;
+            RCLCPP_WARN(this->get_logger(), "sample idx %d invalid", idx_);
         }
+
+        angle_covered_by_scan_points_ += sample_angle_increment;
+        idx_++;
     }
-    last_start_angle_ = start_angle;
     // this makes absolutely 0 sense whatsoever
     // packet_bytes = { 0x00 };
     // if (packet_bytes) {
@@ -1055,6 +1058,8 @@ void LslidarDriver::pubScanThread() {
             }
         } else {
             */
+        constexpr double twopi = 2 * M_PI;
+        constexpr double deg2rad_scale = twopi / 360;
         size_t pub_sample_count { 0 };
         {
             boost::unique_lock<boost::mutex> lock(mutex_);
@@ -1065,15 +1070,15 @@ void LslidarDriver::pubScanThread() {
         }
         if (pubScan_) {
             auto scan = sensor_msgs::msg::LaserScan::UniquePtr(new sensor_msgs::msg::LaserScan());
-            int scan_num = ceil((angle_able_max_ - angle_able_min_) / 360 * pub_sample_count) + 1;
-
             rclcpp::Time start_time;
             float scan_time;
             GetScanToPublish(start_time, scan_time);
             if (scan_points_to_pub_.size() == 0) {
-                RCLCPP_WARN(this->get_logger(), "No scan to get.");
-                return;
+                RCLCPP_WARN(this->get_logger(), "No scan to get. Not publishing.");
+                wait_for_wake = true;
+                continue;
             }
+
             scan->header.frame_id = frame_id_;
             if (use_gps_ts_) {
                 scan->header.stamp = rclcpp::Time(sweep_end_time_gps_, sweep_end_time_hardware_);
@@ -1081,56 +1086,102 @@ void LslidarDriver::pubScanThread() {
                 scan->header.stamp = this->now(); // timestamp will obtained from sweep data stamp
             }
 
-            if (angle_able_max_ > 360) {
-                scan->angle_min = 2 * M_PI * (angle_able_min_ - 360) / 360;
-                scan->angle_max = 2 * M_PI * (angle_able_max_ - 360) / 360;
-            } else {
-                scan->angle_min = 2 * M_PI * angle_able_min_ / 360;
-                scan->angle_max = 2 * M_PI * angle_able_max_ / 360;
-            }
-            scan->angle_increment = 2 * M_PI / (double)(pub_sample_count - 1);
-
+            scan->angle_min = deg2rad_scale * angle_able_min_;
+            scan->angle_max = deg2rad_scale * angle_able_max_;
+            scan->angle_increment = twopi / (pub_sample_count - 1);
             scan->range_min = min_range_;
             scan->range_max = max_range_;
-            scan->ranges.reserve(scan_num);
-            scan->ranges.assign(scan_num, std::numeric_limits<float>::infinity());
-            scan->intensities.reserve(scan_num);
-            scan->intensities.assign(scan_num, std::numeric_limits<float>::infinity());
+            scan->ranges.assign(pub_sample_count, std::numeric_limits<float>::infinity());
+            scan->intensities.assign(pub_sample_count, 0.f);
             scan->scan_time = scan_time;
-            scan->time_increment = scan_time / (double)(pub_sample_count - 1);
+            scan->time_increment = scan_time / (pub_sample_count - 1);
 
-            int start_num = floor(angle_able_min_ * pub_sample_count / 360);
-            int end_num = floor(angle_able_max_ * pub_sample_count / 360);
+            // Get index of min - the vector is in increasing order
+            size_t min_index { 0 };
+            const auto min_it = std::min_element(scan_points_to_pub_.begin(), scan_points_to_pub_.end(),
+                [](const ScanPoint& a, const ScanPoint& b) { return a.degree < b.degree; });
 
-            for (size_t i = 0; i < pub_sample_count; i++) {
-                int point_idx = round((360 - scan_points_to_pub_[i].degree) * pub_sample_count / 360);
-                if (point_idx < static_cast<int>(end_num - pub_sample_count)) point_idx += pub_sample_count;
-                point_idx = point_idx - start_num;
-                if (point_idx < 0 || point_idx > scan_num) continue;
-                if (scan_points_to_pub_[i].range == 0.0) {
-                    scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
-                } else {
-                    double dist = scan_points_to_pub_[i].range;
-                    scan->ranges[point_idx] = (float)dist;
+            min_index = std::distance(scan_points_to_pub_.begin(), min_it);
+
+            size_t scan_points_idx = min_index;
+            for (size_t i = 0; i < pub_sample_count; ++i) {
+                if (scan_points_to_pub_[scan_points_idx].range != 0.f) {
+                    scan->ranges[pub_sample_count - 1 - i] = scan_points_to_pub_[scan_points_idx].range;
+                    scan->intensities[pub_sample_count - 1 - i]
+                        = static_cast<float>(scan_points_to_pub_[scan_points_idx].intensity);
                 }
-                scan->intensities[point_idx] = scan_points_to_pub_[i].intensity;
+                scan_points_idx++;
+                scan_points_idx = scan_points_idx % pub_sample_count;
 
-                if (truncated_mode_) {
-                    int len = sizeof(scan_crop_max) / sizeof(scan_crop_max[0]);
-                    for (int j = 0; j < len; ++j) {
-                        if ((point_idx >= static_cast<int>(scan_crop_min[j] * pub_sample_count / 360))
-                            && (point_idx <= static_cast<int>(scan_crop_max[j] * pub_sample_count / 360))) {
-                            scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
-                            scan->intensities[point_idx] = 0;
-                        }
-                    }
-                }
-                // RCLCPP_INFO(this->get_logger(), "%d: range: %f, intensity: %f", point_idx, scan->ranges[point_idx],
-                //     scan->intensities[point_idx]);
+                // ignore truncated mode
             }
 
+            // int scan_num = ceil((angle_able_max_ - angle_able_min_) / 360 * pub_sample_count) + 1;
+            //
+            // rclcpp::Time start_time;
+            // float scan_time;
+            // GetScanToPublish(start_time, scan_time);
+            // if (scan_points_to_pub_.size() == 0) {
+            //     RCLCPP_WARN(this->get_logger(), "No scan to get.");
+            //     return;
+            // }
+            // scan->header.frame_id = frame_id_;
+            // if (use_gps_ts_) {
+            //     scan->header.stamp = rclcpp::Time(sweep_end_time_gps_, sweep_end_time_hardware_);
+            // } else {
+            //     scan->header.stamp = this->now(); // timestamp will obtained from sweep data stamp
+            // }
+            //
+            // if (angle_able_max_ > 360) {
+            //     scan->angle_min = 2 * M_PI * (angle_able_min_ - 360) / 360;
+            //     scan->angle_max = 2 * M_PI * (angle_able_max_ - 360) / 360;
+            // } else {
+            //     scan->angle_min = 2 * M_PI * angle_able_min_ / 360;
+            //     scan->angle_max = 2 * M_PI * angle_able_max_ / 360;
+            // }
+            // scan->angle_increment = 2 * M_PI / (double)(pub_sample_count - 1);
+            //
+            // scan->range_min = min_range_;
+            // scan->range_max = max_range_;
+            // scan->ranges.reserve(scan_num);
+            // scan->ranges.assign(scan_num, std::numeric_limits<float>::infinity());
+            // scan->intensities.reserve(scan_num);
+            // scan->intensities.assign(scan_num, std::numeric_limits<float>::infinity());
+            // scan->scan_time = scan_time;
+            // scan->time_increment = scan_time / (double)(pub_sample_count - 1);
+            //
+            // int start_num = floor(angle_able_min_ * pub_sample_count / 360);
+            // int end_num = floor(angle_able_max_ * pub_sample_count / 360);
+            //
+            // for (size_t i = 0; i < pub_sample_count; i++) {
+            //     int point_idx = round((360 - scan_points_to_pub_[i].degree) * pub_sample_count / 360);
+            //     if (point_idx < static_cast<int>(end_num - pub_sample_count)) point_idx += pub_sample_count;
+            //     point_idx = point_idx - start_num;
+            //     if (point_idx < 0 || point_idx > scan_num) continue;
+            //     if (scan_points_to_pub_[i].range == 0.0) {
+            //         scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
+            //     } else {
+            //         double dist = scan_points_to_pub_[i].range;
+            //         scan->ranges[point_idx] = (float)dist;
+            //     }
+            //     scan->intensities[point_idx] = scan_points_to_pub_[i].intensity;
+            //
+            //     if (truncated_mode_) {
+            //         int len = sizeof(scan_crop_max) / sizeof(scan_crop_max[0]);
+            //         for (int j = 0; j < len; ++j) {
+            //             if ((point_idx >= static_cast<int>(scan_crop_min[j] * pub_sample_count / 360))
+            //                 && (point_idx <= static_cast<int>(scan_crop_max[j] * pub_sample_count / 360))) {
+            //                 scan->ranges[point_idx] = std::numeric_limits<float>::infinity();
+            //                 scan->intensities[point_idx] = 0;
+            //             }
+            //         }
+            //     }
+            //     // RCLCPP_INFO(this->get_logger(), "%d: range: %f, intensity: %f", point_idx,
+            //     // scan->ranges[point_idx],
+            //     //     scan->intensities[point_idx]);
+            // }
+
             scan_pub_->publish(std::move(scan));
-            RCLCPP_DEBUG(this->get_logger(), "Published scan");
         }
         if (pubPointCloud2_) {
             std::vector<ScanPoint> points;

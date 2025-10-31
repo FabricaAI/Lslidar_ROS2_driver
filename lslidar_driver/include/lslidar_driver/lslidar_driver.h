@@ -126,9 +126,8 @@ private:
     double angle_disable_max_;
     double angle_able_min_;
     double angle_able_max_;
-    double last_degree_ = 0.0;
     double degree_compensation_ = 0.0;
-    double last_start_angle_;
+    double angle_covered_by_scan_points_ = 0.f;
 
     uint16_t packet_size_;
     uint64_t sweep_end_time_gps_;
