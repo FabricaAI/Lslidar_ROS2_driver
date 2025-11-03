@@ -154,7 +154,7 @@ def build_write_request_packet(lidar_mac_str, local_mac_bytes=None):
     # --- Example editable fields ---
     lidar_udp_port = int(parsed["LiDAR UDP Port"]).to_bytes(2, 'little')
     destination_ip = get_local_ip_bytes()  # your machine IP
-    destination_udp_port = (50000).to_bytes(2, 'little')
+    destination_udp_port = (2368).to_bytes(2, 'little')
 
     baudrate = (512000).to_bytes(4, 'little')
     uart_data_bits = bytes([8])
