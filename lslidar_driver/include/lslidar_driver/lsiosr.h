@@ -59,7 +59,7 @@ public:
     int send(const char* buffer, int length, int timeout = 30);
 
     /* Empty serial port input buffer */
-    void flushinput();
+    int flushinput();
 
     /* 串口初始化 */
     int init();
