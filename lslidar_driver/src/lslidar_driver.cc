@@ -480,7 +480,7 @@ bool LslidarDriver::SeekToMagicBytes(uint8_t buf[]) {
             // lone stray 0xA5 probably from data, not a start of packet
             // reread the bytes.
             buf[0] = 0;
-            RCLCPP_INFO(this->get_logger(), "second magic byte error");
+            RCLCPP_ERROR(this->get_logger(), "unexpected second magic byte, possible desync");
         }
     }
 
@@ -521,16 +521,8 @@ int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
         return 0;
     }
 
-    // FIXME: sometimes when the buffer is full it may post all inf for intensity
-    // and maybe distance?
-    // It could be some internal state mismatch or something and it's publishing nonsense so the slam
-    // dies real bad
-    // We may need to reverse engineer the protocol to actually fix it as increasing the kernel buffer is
-    // not possible.
-    //
-    // Try:
     // flush queue
-    // flush scan_points_ and scan_points_bak_
+    // flush all the buffers
     // idx_ = 0
     // degree_compensation_ = 0
     // queue length is technically 4096 but kernel will drop all bytes that are not a line break
