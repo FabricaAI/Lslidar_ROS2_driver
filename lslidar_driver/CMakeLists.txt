@@ -12,9 +12,10 @@ endif()
 
 # fpermissive so that we can pass const char* to read()
 add_compile_options(-fpermissive)
+add_compile_options(-O2)
 
 # if we need to debug
-add_compile_options(-g)
+# add_compile_options(-g)
 
 set(libpcap_LIBRARIES -lpcap)
 
