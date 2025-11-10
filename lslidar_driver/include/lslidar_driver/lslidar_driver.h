@@ -82,7 +82,7 @@ private:
     void pubScanThread();
     void recvThread_crc(int& count, int& link_time);
     int receive_data(std::vector<uint8_t>& dst);
-    int GetScanToPublish(rclcpp::Time& scan_time, float& scan_duration);
+    size_t GetScanToPublish(rclcpp::Time& scan_time, float& scan_duration);
     int SerialReadBytes(uint8_t buf[], size_t n, int timeout = 100);
 
     /*
@@ -111,6 +111,8 @@ private:
     int link_time_ = 0;
     const int max_packet_len_ = 188;
     const int min_packet_len_ = 156;
+    size_t max_consecutive_failed_reads_;
+    size_t curr_failed_reads_ = 0;
 
     bool use_gps_ts_;
     bool is_start_;
@@ -119,6 +121,7 @@ private:
     bool first_compensation_ = true;
     bool pubScan_;
     bool pubPointCloud2_;
+    bool data_ready_;
 
     double min_range_;
     double max_range_;
