@@ -11,10 +11,10 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 # fpermissive so that we can pass const char* to read()
-add_compile_options(-O2 -fpermissive)
+add_compile_options(-fpermissive)
 
 # if we need to debug
-# add_compile_options(-g)
+add_compile_options(-g)
 
 set(libpcap_LIBRARIES -lpcap)
 
@@ -33,7 +33,7 @@ find_package(pluginlib REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(sensor_msgs REQUIRED)
-#find_package(PCL REQUIRED COMPONENTS common io)											   
+#find_package(PCL REQUIRED COMPONENTS common io)
 
 include_directories(
 		include

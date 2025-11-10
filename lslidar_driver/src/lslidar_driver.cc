@@ -85,6 +85,8 @@ bool LslidarDriver::loadParameters() {
     this->declare_parameter<double>("angle_disable_min", 0.0);
     this->declare_parameter<double>("angle_disable_max", 0.0);
     this->declare_parameter<std::string>("interface_selection", "serial");
+    this->declare_parameter<std::string>("serial_port_", "/dev/ttyACM2");
+    this->declare_parameter<int>("max_consecutive_failed_reads", 150); // 0.5s straight of failed reads
 
     this->get_parameter("lidar_name", lidar_name_);
     this->get_parameter("frame_id", frame_id_);
@@ -100,6 +102,7 @@ bool LslidarDriver::loadParameters() {
     this->get_parameter("angle_disable_min", angle_disable_min_);
     this->get_parameter("angle_disable_max", angle_disable_max_);
     this->get_parameter("interface_selection", interface_selection_);
+    this->get_parameter("max_consecutive_failed_reads", max_consecutive_failed_reads_);
     while (angle_disable_min_ < 0)
         angle_disable_min_ += 360;
     while (angle_disable_max_ < 0)
@@ -335,7 +338,6 @@ void LslidarDriver::lidar_order(const std_msgs::msg::Int8::SharedPtr msg) {
 
 void LslidarDriver::open_serial() {
     diagnostics_.setHardwareID("Lslidar");
-    this->declare_parameter<std::string>("serial_port_", "/dev/ttyACM2");
     this->get_parameter("serial_port_", serial_port_);
     serial_ = LSIOSR::instance(serial_port_, baud_rate_);
     int errcode = serial_->init();
@@ -383,14 +385,16 @@ bool LslidarDriver::createRosIO() {
     return true;
 }
 
-int LslidarDriver::GetScanToPublish(rclcpp::Time& scan_time, float& scan_duration) {
+size_t LslidarDriver::GetScanToPublish(rclcpp::Time& scan_time, float& scan_duration) {
+    size_t pub_sample_count { 0 };
     {
         boost::unique_lock<boost::mutex> lock(mutex_);
         std::swap(scan_points_to_pub_, scan_points_shared_);
+        pub_sample_count = pub_sample_count_shared_;
     }
     scan_time = pre_time_;
     scan_duration = time_.seconds() - pre_time_.seconds();
-    return 1;
+    return pub_sample_count;
 }
 
 uint64_t LslidarDriver::get_gps_stamp(struct tm t) {
@@ -494,7 +498,7 @@ int LslidarDriver::GetCurrentRxQueueSize() {
             this->get_logger(), "Failed to read kernel queue size - %s: %s", strerrorname_np(errno), strerror(errno));
         return -1;
     }
-    RCLCPP_DEBUG(this->get_logger(), "bytes in kernel queue: %d", rx_queue_count);
+    // RCLCPP_DEBUG(this->get_logger(), "bytes in kernel queue: %d", rx_queue_count);
     return rx_queue_count;
 }
 
@@ -514,10 +518,24 @@ void LslidarDriver::ClearInternalState() {
 int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
     // Get the rx queue size BEFORE reading from it
     int queue_size { GetCurrentRxQueueSize() };
+    if (queue_size < 0) {
+        return 0;
+    }
     if (queue_size < max_packet_len_) {
         // not guaranteed to get a full packet. Try again later.
-        // RCLCPP_WARN(this->get_logger(), "Not enough bytes to form a packet (%d), retrying next iteration",
-        // queue_size);
+        RCLCPP_DEBUG(this->get_logger(), "Not enough bytes to form a packet (%d), retrying next iteration", queue_size);
+        curr_failed_reads_++;
+        if (curr_failed_reads_ > max_consecutive_failed_reads_) {
+            // some connection error. Close and reopen the connection.
+            RCLCPP_WARN(this->get_logger(), "Possible connection failure. Resetting the serial connection.");
+            int ret = serial_->close();
+            if (ret < 0) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to close serial port - %s: %s", strerrorname_np(errno),
+                    strerror(errno));
+            }
+            serial_->init();
+            curr_failed_reads_ = 0;
+        }
         return 0;
     }
 
@@ -530,8 +548,10 @@ int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
     else if (queue_size >= (3907)) {
         RCLCPP_WARN(this->get_logger(), "Kernel buffer full. Clearing internal state as a precaution.");
         ClearInternalState();
+        curr_failed_reads_ = 0;
         return 0;
     }
+    curr_failed_reads_ = 0;
 
     int len = 0;
     uint8_t magic_buf[2] { 0, 0 };
@@ -727,6 +747,7 @@ void LslidarDriver::ProcessPacket(const std::vector<uint8_t>& buf) // 处理每�
                 // just swap the size, cap and data ptr here
                 std::swap(scan_points_, scan_points_shared_);
                 pub_sample_count_shared_ = pub_sample_count;
+                data_ready_ = true;
             }
             // guaranteed that pub_sample_count_shared_ is reassigned.
             // publish the message
@@ -909,14 +930,14 @@ void LslidarDriver::data_processing_2(unsigned char* packet_bytes,
 */
 
 void LslidarDriver::pubScanThread() {
-    bool wait_for_wake = true;
-    boost::unique_lock<boost::mutex> lock(pubscan_mutex_);
 
     while (rclcpp::ok()) {
-
-        while (wait_for_wake) {
-            pubscan_cond_.wait(lock);
-            wait_for_wake = false;
+        {
+            boost::unique_lock<boost::mutex> lock(mutex_);
+            while (!data_ready_) {
+                pubscan_cond_.wait(lock);
+            }
+            data_ready_ = false;
         }
         // these are not our models
         /*
@@ -1053,21 +1074,13 @@ void LslidarDriver::pubScanThread() {
         constexpr double twopi = 2 * M_PI;
         constexpr double deg2rad_scale = twopi / 360;
         size_t pub_sample_count { 0 };
-        {
-            boost::unique_lock<boost::mutex> lock(mutex_);
-            pub_sample_count = pub_sample_count_shared_;
-        }
-        if (pub_sample_count == 0) {
-            RCLCPP_ERROR(this->get_logger(), "pub sample count is 0");
-        }
         if (pubScan_) {
             auto scan = sensor_msgs::msg::LaserScan::UniquePtr(new sensor_msgs::msg::LaserScan());
             rclcpp::Time start_time;
             float scan_time;
-            GetScanToPublish(start_time, scan_time);
+            pub_sample_count = GetScanToPublish(start_time, scan_time);
             if (scan_points_to_pub_.size() == 0) {
                 RCLCPP_WARN(this->get_logger(), "No scan to get. Not publishing.");
-                wait_for_wake = true;
                 continue;
             }
 
@@ -1217,7 +1230,6 @@ void LslidarDriver::pubScanThread() {
             point_cloud_pub_->publish(pc_msg);
         }
         // pub_sample_count_shared_ = 0;
-        wait_for_wake = true;
         if (compensation_) {
             lidar_difop();
         }
