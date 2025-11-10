@@ -534,6 +534,7 @@ int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
                     strerror(errno));
             }
             serial_->init();
+            ClearInternalState();
             curr_failed_reads_ = 0;
         }
         return 0;
