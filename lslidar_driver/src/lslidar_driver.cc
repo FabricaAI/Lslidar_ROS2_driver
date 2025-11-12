@@ -45,13 +45,17 @@ namespace lslidar_driver {
 LslidarDriver::LslidarDriver() : LslidarDriver(rclcpp::NodeOptions()) { }
 LslidarDriver::LslidarDriver(const rclcpp::NodeOptions& options)
     : Node("lslidar_driver_node", options)
-    , diagnostics_(this) {
+    , diagnostics_(this)
+    , out_stream_("lidar_raw.bin", std::ios::binary) {
 
     if (!this->initialize()) RCLCPP_ERROR(this->get_logger(), "Could not initialize the driver...");
     else RCLCPP_INFO(this->get_logger(), "Successfully initialize driver...");
 }
 
-LslidarDriver::~LslidarDriver() { return; }
+LslidarDriver::~LslidarDriver() {
+    out_stream_.close();
+    return;
+}
 
 bool LslidarDriver::loadParameters() {
     pubscan_thread_ = new boost::thread(boost::bind(&LslidarDriver::pubScanThread, this));
@@ -598,6 +602,9 @@ int LslidarDriver::receive_data(std::vector<uint8_t>& dst) {
         return 0;
     }
 
+    // if we want to write data to a file
+    // out_stream_.write(reinterpret_cast<const char*>(dst.data()), len);
+
     // if (lidar_name == "N10" || lidar_name == "L10" || lidar_name == "N10_P") {
     //     if (packet_bytes[PACKET_SIZE - 1] != N10_CalCRC8(packet_bytes, PACKET_SIZE - 1)) return 0;
     // }
@@ -932,11 +939,18 @@ void LslidarDriver::data_processing_2(unsigned char* packet_bytes,
 
 void LslidarDriver::pubScanThread() {
 
-    while (rclcpp::ok()) {
+    // should_shutdown_ checked in two places
+    // while loop: if the flag is set while publishing
+    // pubscan_cond_.wait(): if the flag is set while waiting for new data
+
+    while (!should_shutdown_) {
         {
             boost::unique_lock<boost::mutex> lock(mutex_);
-            while (!data_ready_) {
+            while (!data_ready_ && !should_shutdown_) {
                 pubscan_cond_.wait(lock);
+                if (should_shutdown_) {
+                    return;
+                }
             }
             data_ready_ = false;
         }
@@ -1349,6 +1363,18 @@ void LslidarDriver::polling() {
         // else
         LslidarDriver::ProcessPacket(serial_read_buf_);
     }
+}
+
+void LslidarDriver::ShutdownDriver() {
+    // actually shut down gracefully
+    RCLCPP_INFO(this->get_logger(), "Shutting down node");
+    {
+        boost::unique_lock<boost::mutex> lock(mutex_);
+        should_shutdown_ = true;
+    }
+    pubscan_cond_.notify_one();
+    read_serial_timer_->cancel();
+    pubscan_thread_->join();
 }
 
 } // namespace lslidar_driver

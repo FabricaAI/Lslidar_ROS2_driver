@@ -64,6 +64,7 @@ public:
 
     bool initialize();
     void polling();
+    void ShutdownDriver();
 
     typedef std::shared_ptr<LslidarDriver> LslidarDriverPtr;
     typedef std::shared_ptr<const LslidarDriver> LslidarDriverConstPtr;
@@ -96,7 +97,6 @@ private:
     boost::thread* pubscan_thread_;
     boost::shared_ptr<Input> msop_input_;
     boost::mutex mutex_;
-    boost::mutex pubscan_mutex_;
     boost::condition_variable pubscan_cond_;
     int UDP_PORT_NUMBER;
     size_t pub_sample_count_shared_;
@@ -163,6 +163,9 @@ private:
     rclcpp::Subscription<std_msgs::msg::Int8>::SharedPtr difop_switch_;
     rclcpp::TimerBase::SharedPtr read_serial_timer_;
     LSIOSR* serial_;
+
+    std::ofstream out_stream_;
+    bool should_shutdown_ = false;
 };
 typedef PointXYZIT VPoint;
 typedef pcl::PointCloud<VPoint> VPointCloud;
