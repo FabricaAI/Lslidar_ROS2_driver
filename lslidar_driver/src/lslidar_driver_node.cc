@@ -22,8 +22,8 @@ using namespace lslidar_driver;
 volatile sig_atomic_t flag = 1;
 
 bool should_shutdown_node { false };
-static void sigint_handler(int sig) {
-    printf("sig: %d", sig);
+static void sigint_handler(int) {
+    printf("Recevied sigint\n");
     should_shutdown_node = true;
 }
 
@@ -35,7 +35,7 @@ int main(int argc, char* argv[]) {
     while (rclcpp::ok() && !should_shutdown_node) {
         rclcpp::spin_some(node);
     }
-    // rclcpp::spin(node);
+    node->ShutdownDriver();
     rclcpp::shutdown();
     return 0;
 }
