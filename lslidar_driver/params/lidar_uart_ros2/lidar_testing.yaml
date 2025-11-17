@@ -1,0 +1,23 @@
+/lslidar_driver_node:
+  ros__parameters: 
+    frame_id: lidar_link                                    # LiDAR coordinate frame
+    group_ip: 224.1.1.2
+    add_multicast: false
+    device_ip: 192.168.1.200                                # LiDAR source IP
+    device_ip_difop: 192.168.1.102                          # LiDAR destination IP
+    msop_port: 2368                                         # LiDAR destination port number
+    difop_port: 2369                                        # LiDAR source port number
+    lidar_name: M10_P                                       # LiDAR model: M10, M10_P, M10_PLUS, M10_GPS, N10, L10, N10_P
+    angle_disable_min: 0.0                                  # Start angle for cropping
+    angle_disable_max: 0.0                                  # End angle for cropping
+    min_range: 0.0                                          # Minimum detectable range
+    max_range: 200.0                                        # Maximum detectable range
+    use_gps_ts: false                                       # Whether to use GPS timestamping
+    scan_topic: /scan_raw                                   # Topic name for laser scan data
+    interface_selection: serial                             # Interface selection: "net" for Ethernet, "serial" for serial port
+    serial_port_: /dev/ttyACM2                              # Serial port device path
+    high_reflection: false                                  # Required for M10_P; contact technical support if unsure
+    compensation: false                                     # Whether to enable angle compensation (for M10 series)
+    pubScan: true                                           # Whether to publish the scan topic
+    pubPointCloud2: false                                   # Whether to publish the PointCloud2 topic
+    pointcloud_topic: /lslidar_point_cloud                  # Topic name for point cloud data
